@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -P gcg51557
+#PBS -q R9920261000
+#PBS -v RTYPE=rt_HF
+#PBS -l select=1
+#PBS -l walltime=6:00:00
+#PBS -N 0374_kame-finetune
+
+cd /groups/gcg51557/experiments/0374_japanese_kame/moshi_kame_finetune
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.1
+export PATH="$HOME/.local/bin:$PATH"
+export WANDB_MODE=offline
+
+TRAIN_DATA_GLOB="processed_data/japanese_kame/0610/batch_*-*.parquet" \
+OUTPUT_DIR="output/0374_kame-0610-e5" \
+NUM_PROCESSES=8 \
+NUM_EPOCHS=5 \
+PER_DEVICE_BATCH_SIZE=2 \
+SAVE_STEPS=500 LOGGING_STEPS=10 NUM_WARMUP_STEPS=100 \
+bash examples/finetune_j_moshi.sh

@@ -21,17 +21,6 @@
 #   MOSHI_SPEAKERS        - main (model) speaker(s): "A", "B" or "A B".
 #                           Empty -> finetune.py default ("A", the questioner).
 #                           Set "B" to train the model as the answerer.
-#   REPORT_TO             - experiment tracker: "wandb" enables W&B logging.
-#                           Empty -> no tracking (finetune.py default).
-#   PROJECT_NAME          - W&B project name (only used when REPORT_TO=wandb;
-#                           empty -> finetune.py default "kame-finetuning").
-#   --- oracle-reliance pressure (all empty -> finetune.py defaults) ---
-#   SEMANTIC_EMB_DROPOUT  - prob. of zeroing semantic audio (cb0) per sample.
-#   TEXT_TOKEN_DROPOUT    - prob. of flipping inner-monologue tokens to pad.
-#   TEXT_EMB_DROPOUT      - prob. of zeroing the whole text embedding per sample.
-#   ORACLE_SKIP_PROB_MIN  - min per-sample oracle-event skip probability.
-#   ORACLE_SKIP_PROB_MAX  - max per-sample oracle-event skip probability.
-#   ORACLE_MAX_TIME_JITTER_FRAMES - jitter (frames) on oracle event positions.
 #
 # Compute estimate:
 #   A100 80GB × 8  -> ~0.5–1 day  (50k sessions)
@@ -53,14 +42,6 @@ LOGGING_STEPS="${LOGGING_STEPS:-10}"
 SAVE_STEPS="${SAVE_STEPS:-500}"
 USE_ORACLE="${USE_ORACLE:-1}"
 MOSHI_SPEAKERS="${MOSHI_SPEAKERS:-}"
-REPORT_TO="${REPORT_TO:-}"
-PROJECT_NAME="${PROJECT_NAME:-}"
-SEMANTIC_EMB_DROPOUT="${SEMANTIC_EMB_DROPOUT:-}"
-TEXT_TOKEN_DROPOUT="${TEXT_TOKEN_DROPOUT:-}"
-TEXT_EMB_DROPOUT="${TEXT_EMB_DROPOUT:-}"
-ORACLE_SKIP_PROB_MIN="${ORACLE_SKIP_PROB_MIN:-}"
-ORACLE_SKIP_PROB_MAX="${ORACLE_SKIP_PROB_MAX:-}"
-ORACLE_MAX_TIME_JITTER_FRAMES="${ORACLE_MAX_TIME_JITTER_FRAMES:-}"
 
 EXTRA_ARGS=()
 if [ "${USE_ORACLE}" = "1" ]; then
@@ -69,30 +50,6 @@ fi
 if [ -n "${MOSHI_SPEAKERS}" ]; then
     # Intentional word-splitting: "A B" -> two values for argparse nargs="+".
     EXTRA_ARGS+=(--moshi_speakers ${MOSHI_SPEAKERS})
-fi
-if [ -n "${REPORT_TO}" ]; then
-    EXTRA_ARGS+=(--report_to "${REPORT_TO}")
-fi
-if [ -n "${PROJECT_NAME}" ]; then
-    EXTRA_ARGS+=(--project_name "${PROJECT_NAME}")
-fi
-if [ -n "${SEMANTIC_EMB_DROPOUT}" ]; then
-    EXTRA_ARGS+=(--semantic_emb_dropout "${SEMANTIC_EMB_DROPOUT}")
-fi
-if [ -n "${TEXT_TOKEN_DROPOUT}" ]; then
-    EXTRA_ARGS+=(--text_token_dropout "${TEXT_TOKEN_DROPOUT}")
-fi
-if [ -n "${TEXT_EMB_DROPOUT}" ]; then
-    EXTRA_ARGS+=(--text_emb_dropout "${TEXT_EMB_DROPOUT}")
-fi
-if [ -n "${ORACLE_SKIP_PROB_MIN}" ]; then
-    EXTRA_ARGS+=(--oracle_skip_prob_min "${ORACLE_SKIP_PROB_MIN}")
-fi
-if [ -n "${ORACLE_SKIP_PROB_MAX}" ]; then
-    EXTRA_ARGS+=(--oracle_skip_prob_max "${ORACLE_SKIP_PROB_MAX}")
-fi
-if [ -n "${ORACLE_MAX_TIME_JITTER_FRAMES}" ]; then
-    EXTRA_ARGS+=(--oracle_max_time_jitter_frames "${ORACLE_MAX_TIME_JITTER_FRAMES}")
 fi
 
 uv run accelerate launch \

@@ -35,3 +35,11 @@ slurm-*.err
 
 /outputs/
 /logs/
+
+# PBS job logs
+*.o[0-9]*
+*.e[0-9]*
+vllm_server.log
+
+# local venvs
+.venv*
