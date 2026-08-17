@@ -1,0 +1,34 @@
+#!/bin/bash
+# 配管検証の続き：工程 4（アライメント）と 5（<ret> 配置）だけ再実行する。
+# 前回 uv が PATH に無くて工程 4 が落ちた。音声は pipe20/audio_final に残っている。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=02:00:00
+#PBS -N 0374_pipe20b
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+P=/groups/gcg51557/experiments/0374_japanese_kame/pipe20
+echo "===== $(date) $(hostname) ====="; which uv; nvidia-smi --query-gpu=name --format=csv,noheader
+echo "入力: 音声 $(ls "$P"/audio_final/*.wav 2>/dev/null | wc -l) 件 / dialogue $(ls "$P"/in/*.json 2>/dev/null | grep -v struct | wc -l) 件"
+
+echo "===== 4) アライメント ====="
+S=$(date +%s)
+uv run --extra data python scripts/japanese_kame/04_word_alignment.py \
+    --audio_dir "$P/audio_final" --dialogue_dir "$P/in" --output_dir "$P/align" 2>&1 | tail -8
+E=$(date +%s); echo "所要 $((E-S)) 秒 / 出力 $(ls "$P"/align/*.json 2>/dev/null | wc -l) 件"
+
+echo "===== 5) <ret> 配置 ====="
+uv run --no-project python scripts/japanese_kame/08_place_ret_token.py \
+    --align_dir "$P/align" --struct_dir "$P/in" --output_dir "$P/ret"
+
+echo "===== 出力例 ====="
+F=$(ls "$P"/ret/*.json 2>/dev/null | head -1)
+[ -n "$F" ] && head -32 "$F"
+date

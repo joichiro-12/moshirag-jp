@@ -1,0 +1,65 @@
+#!/bin/bash
+# 配管検証：レコード 20 会話 → 音声化 → 後段処理 → アライメント → <ret> 配置
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=03:00:00
+#PBS -N 0374_pipe20
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+BASE=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$BASE/tts/fireredtts2-code
+W=$BASE/tts/pretrained_models_link
+WEIGHTS=/groups/gcg51557/experiments/0386_dialogue_model/FireRedTTS2/pretrained_models/finetuned_drop_v2
+P=$BASE/pipe20            # 作業ディレクトリ
+
+echo "===== $(date) $(hostname) ====="; nvidia-smi --query-gpu=name --format=csv,noheader
+rm -rf "$P"; mkdir -p "$P"/{in,audio,align,ret}
+
+echo "===== 1) レコード -> 台本 / dialogue JSON / struct ====="
+.venv_vllm/bin/python scripts/japanese_kame/07_prepare_tts_inputs.py \
+    --input_dir data/moshirag_jp/pilot5k --output_dir "$P/in" --limit 20
+
+echo "===== 2) 音声化（FireRedTTS2）====="
+cd "$TTS"
+S=$(date +%s); n=0
+for f in "$P"/in/*.txt; do
+    stem=$(basename "$f" .txt)
+    .venv/bin/python dialogue_tools/synthesize.py \
+        --pretrained_dir "$WEIGHTS" --script "$f" \
+        --out "$P/audio/${stem}.wav" --layout stereo > /dev/null 2>&1 && n=$((n+1))
+done
+E=$(date +%s)
+echo "合成 ${n} 件 / $((E-S)) 秒"
+
+echo "===== 3) 後段処理（構造を見た重なり）====="
+for m in "$P"/audio/*.manifest.json; do
+    stem=$(basename "$m" .manifest.json)
+    .venv/bin/python "$BASE/tts/work/annotate_manifest.py" \
+        "$m" "$P/in/${stem}.txt" "$P/audio/${stem}.annot.json" > /dev/null 2>&1
+    .venv/bin/python dialogue_tools/postprocess.py \
+        --manifest "$P/audio/${stem}.annot.json" --op overlap \
+        --out "$P/audio/${stem}.final.wav" --seed 0 2>&1 | grep -o '構造で抑止[0-9]*件' | head -1
+done
+
+echo "===== 4) アライメント（stable-ts CTC forced alignment）====="
+cd "$PBS_O_WORKDIR"
+mkdir -p "$P/audio_final"
+for f in "$P"/audio/*.final.wav; do cp "$f" "$P/audio_final/$(basename "${f%.final.wav}").wav"; done
+S=$(date +%s)
+uv run --extra data python scripts/japanese_kame/04_word_alignment.py \
+    --audio_dir "$P/audio_final" --dialogue_dir "$P/in" --output_dir "$P/align" 2>&1 | tail -6
+E=$(date +%s); echo "アライメント $((E-S)) 秒 / 出力 $(ls "$P"/align/*.json 2>/dev/null | wc -l) 件"
+
+echo "===== 5) <ret> 配置 ====="
+.venv_vllm/bin/python scripts/japanese_kame/08_place_ret_token.py \
+    --align_dir "$P/align" --struct_dir "$P/in" --output_dir "$P/ret"
+
+echo "===== 出力例 ====="
+head -40 "$(ls "$P"/ret/*.json | head -1)"
+date

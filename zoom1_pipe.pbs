@@ -1,0 +1,54 @@
+#!/bin/bash
+# zoom1-dialogue-tts で合成し、manifest から <ret> を配置する（配管の再検証）
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=03:00:00
+#PBS -N 0374_zoom1_pipe
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+BASE=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$BASE/tts/zoom1-tts
+P=$BASE/zoom1_pipe
+
+echo "===== $(date) $(hostname) ====="; nvidia-smi --query-gpu=name --format=csv,noheader
+rm -rf "$P"; mkdir -p "$P"/{in,audio,ret}
+
+echo "===== 1) レコード -> 台本（lead/body/tail を別ターン）====="
+uv run --extra data python scripts/japanese_kame/07_prepare_tts_inputs.py \
+    --input_dir data/moshirag_jp/pilot5k --output_dir "$P/in" --limit 8
+
+echo "===== 2) zoom1-dialogue-tts で合成 ====="
+cd "$TTS"
+S=$(date +%s); n=0
+for f in "$P"/in/*.txt; do
+    stem=$(basename "$f" .txt)
+    uv run zoom1-dialogue-tts "$f" -o "$P/audio/${stem}.wav" \
+        --variant drop --turn-timing stat --backchannels stat --seed 0 > "$P/audio/${stem}.log" 2>&1 \
+        && n=$((n+1)) || echo "  失敗: $stem"
+done
+E=$(date +%s); echo "合成 ${n} 件 / $((E-S)) 秒"
+ls "$P"/audio | head -8
+
+echo "===== 3) manifest から <ret> 配置 ====="
+cd "$PBS_O_WORKDIR"
+uv run --no-project python scripts/japanese_kame/08_place_ret_token.py \
+    --manifest_dir "$P/audio" --struct_dir "$P/in" --output_dir "$P/ret"
+
+echo "===== manifest の構造 ====="
+M=$(ls "$P"/audio/*.manifest.json 2>/dev/null | head -1)
+[ -n "$M" ] && uv run --no-project python -c "
+import json,sys; d=json.load(open('$M'))
+print('トップレベルのキー:', list(d)[:10] if isinstance(d,dict) else 'list')
+t=d['turns'] if isinstance(d,dict) else d
+print(f'{len(t)} ターン'); [print(' ',{k:v for k,v in x.items() if k in ('speaker','channel','onset','duration','text')}) for x in t[:6]]"
+
+echo "===== <ret> 出力例 ====="
+F=$(ls "$P"/ret/*.json 2>/dev/null | head -1); [ -n "$F" ] && head -30 "$F"
+date
