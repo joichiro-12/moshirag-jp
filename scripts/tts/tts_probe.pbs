@@ -1,0 +1,65 @@
+#!/bin/bash
+# ◆1 の測定：lead を FireRedTTS2 で合成し、実際の秒数を測る。
+# 設計値は 9〜18 モーラ = 2〜4 秒。これが成立するかを確かめる。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=01:00:00
+#PBS -N 0374_tts_probe
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+CODE=/groups/gcg51557/experiments/0374_japanese_kame/tts/fireredtts2-code
+W=/groups/gcg51557/experiments/0386_dialogue_model/FireRedTTS2/pretrained_models
+OUT=/groups/gcg51557/experiments/0374_japanese_kame/tts/probe
+
+echo "=== $(date) $(hostname) ==="; nvidia-smi --query-gpu=name --format=csv,noheader
+mkdir -p "$OUT"
+
+# 重みを 2 種で比較する：本家 と 日本語 fine-tune 版
+for MODEL in FireRedTTS2 finetuned_drop_v2; do
+  echo "######## pretrained=$MODEL ########"
+  O="$OUT/$MODEL"; mkdir -p "$O"
+  cd "$CODE"
+  .venv/bin/python dialogue_tools/synthesize.py \
+      --pretrained_dir "$W/$MODEL" \
+      --script /groups/gcg51557/experiments/0374_japanese_kame/moshi_kame_finetune/lead_probe.txt \
+      --out "$O/leads.wav" --layout stereo 2>&1 | tail -12
+  echo "--- 出力 ---"; ls -la "$O" 2>/dev/null | head -5
+  ls "$O/turns" 2>/dev/null | head -3
+done
+
+echo "=== manifest から秒数を集計 ==="
+cd "$CODE"
+.venv/bin/python - <<'PY'
+import json, glob, re, os
+META = json.load(open("/groups/gcg51557/experiments/0374_japanese_kame/moshi_kame_finetune/lead_probe_meta.json"))
+for man in sorted(glob.glob("/groups/gcg51557/experiments/0374_japanese_kame/tts/probe/*/leads.manifest.json")):
+    tag = os.path.basename(os.path.dirname(man))
+    d = json.load(open(man))
+    turns = d if isinstance(d, list) else d.get("turns", [])
+    print(f"\n#### {tag}  ({len(turns)} ターン) ####")
+    print(f"{'モーラ':>5} {'秒':>6} {'モーラ/秒':>9}  テキスト")
+    rates = []
+    for m, t in zip(META, turns):
+        dur = t.get("duration") or (t.get("end", 0) - t.get("onset", 0))
+        if not dur:
+            continue
+        r = m["mora"] / dur
+        rates.append((m["mora"], dur, r))
+        print(f"{m['mora']:>5} {dur:>6.2f} {r:>9.2f}  {m['text']}")
+    if rates:
+        secs = [d for _, d, _ in rates]
+        rr = [r for _, _, r in rates]
+        print(f"  秒: 平均 {sum(secs)/len(secs):.2f} / 範囲 {min(secs):.2f}-{max(secs):.2f}")
+        print(f"  モーラ/秒: 平均 {sum(rr)/len(rr):.2f}")
+        ok = sum(1 for _, d, _ in rates if 2.0 <= d <= 4.0)
+        print(f"  2〜4 秒に入った lead: {ok}/{len(rates)}")
+        ge2 = sum(1 for _, d, _ in rates if d >= 2.0)
+        print(f"  2 秒以上（d_lead の下限）: {ge2}/{len(rates)}")
+PY
+date

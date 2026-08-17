@@ -1,0 +1,46 @@
+#!/bin/bash
+# 1 会話まるごとを FireRedTTS2 で合成し、ステレオ分離と manifest を確認する。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=01:00:00
+#PBS -N 0374_tts_conv
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+CODE=/groups/gcg51557/experiments/0374_japanese_kame/tts/fireredtts2-code
+W=/groups/gcg51557/experiments/0386_dialogue_model/FireRedTTS2/pretrained_models/finetuned_drop_v2
+OUT=/groups/gcg51557/experiments/0374_japanese_kame/tts/conv
+SCRIPT=/groups/gcg51557/experiments/0374_japanese_kame/moshi_kame_finetune/conv_probe.txt
+
+echo "=== $(date) $(hostname) ==="; nvidia-smi --query-gpu=name --format=csv,noheader
+mkdir -p "$OUT"; cd "$CODE"
+S=$(date +%s)
+.venv/bin/python dialogue_tools/synthesize.py \
+    --pretrained_dir "$W" --script "$SCRIPT" \
+    --out "$OUT/conv.wav" --layout stereo 2>&1 | tail -15
+E=$(date +%s)
+echo "合成所要: $((E-S)) 秒"
+
+echo "=== 出力 ==="; ls -la "$OUT" | head; echo "--- turns ---"; ls "$OUT/turns" 2>/dev/null | head -12
+
+.venv/bin/python - <<'PY'
+import json, wave, os
+OUT="/groups/gcg51557/experiments/0374_japanese_kame/tts/conv"
+w=wave.open(f"{OUT}/conv.wav"); dur=w.getnframes()/w.getframerate()
+print(f"\nconv.wav: {dur:.1f} 秒 / {w.getframerate()} Hz / {w.getnchannels()} ch")
+d=json.load(open(f"{OUT}/conv.manifest.json"))
+turns=d if isinstance(d,list) else d.get("turns",[])
+print(f"manifest: {len(turns)} ターン")
+print(f"{'#':>2} {'sp':>3} {'ch':>3} {'onset':>7} {'dur':>6}  text")
+for i,t in enumerate(turns,1):
+    print(f"{i:>2} {str(t.get('speaker')):>3} {str(t.get('channel')):>3} "
+          f"{t.get('onset',0):>7.2f} {t.get('duration',0):>6.2f}  {str(t.get('text',''))[:44]}")
+tot=sum(t.get('duration',0) for t in turns)
+print(f"\n発話合計 {tot:.1f} 秒 / 全体 {dur:.1f} 秒 → 無音 {dur-tot:.1f} 秒 ({100*(dur-tot)/dur:.0f}%)")
+PY
+date

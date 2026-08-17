@@ -1,0 +1,31 @@
+--- /groups/gcg51557/experiments/0374_japanese_kame/tts/fireredtts2-code/dialogue_tools/postprocess.py.orig	2026-08-17 09:48:53.000000000 +0900
++++ /groups/gcg51557/experiments/0374_japanese_kame/tts/fireredtts2-code/dialogue_tools/postprocess.py	2026-08-17 09:48:53.000000000 +0900
+@@ -64,7 +64,11 @@
+         prev_end = onsets[i - 1] + audios[i - 1].shape[0]
+         off_ms = 0.0
+         if turns[i]["speaker"] != turns[i - 1]["speaker"]:
+-            if rng.random() < gap_prob:
++            # 重なりを許すのは、割り込む側の冒頭がフィラー等で、かつ割り込まれる側の
++            # 末尾が本題でないときだけ。フィールドが無ければ従来どおり許可する。
++            can_overlap = (turns[i].get("allow_overlap_in", True)
++                           and turns[i - 1].get("allow_overlap_out", True))
++            if (not can_overlap) or rng.random() < gap_prob:
+                 off_ms = min(gap_max_ms, abs(rng.gauss(0, gap_std_ms)) + 50.0)   # 間(正)
+                 n_gap += 1
+             else:
+@@ -75,8 +79,15 @@
+             offs.append(off_ms)
+         onset = prev_end + int(off_ms * sr / 1000.0)
+         onsets.append(max(0, onset))
++    n_blocked = sum(
++        1 for i in range(1, len(turns))
++        if turns[i]["speaker"] != turns[i - 1]["speaker"]
++        and not (turns[i].get("allow_overlap_in", True)
++                 and turns[i - 1].get("allow_overlap_out", True))
++    )
+     if offs:
+         import statistics
++        print(f"[overlap] 構造で抑止{n_blocked}件  ", end="")
+         print(f"[overlap] 交代{len(offs)}件: 間{n_gap}/重なり{n_ov}  "
+               f"offset mean={statistics.mean(offs):.0f}ms std={statistics.pstdev(offs):.0f}ms(緩急)",
+               flush=True)

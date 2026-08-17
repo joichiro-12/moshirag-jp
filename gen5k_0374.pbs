@@ -5,7 +5,7 @@
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
-#PBS -l walltime=12:00:00
+#PBS -l walltime=04:00:00
 #PBS -N 0374_moshirag_5k
 #PBS -j oe
 
