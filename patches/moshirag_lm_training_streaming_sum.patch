@@ -1,0 +1,19 @@
+diff --git a/moshi/moshi/models/lm.py b/moshi/moshi/models/lm.py
+index 6779aa5..c9c71c9 100644
+--- a/moshi/moshi/models/lm.py
++++ b/moshi/moshi/models/lm.py
+@@ -404,8 +404,12 @@ class LMModel(StreamingContainer):
+         if streaming_sum_condition is not None:
+             condition_len = streaming_sum_condition.shape[1]
+             if condition_len > 0:
+-                assert condition_len == 1
+-                assert S == 1
++                # 元実装は推論（1 ステップずつ）専用で condition_len == 1 かつ S == 1 のみを
++                # 許していた。学習は系列全体を一度に通すため、S フレーム分の条件を
++                # そのまま受けられるように条件を緩めている（日本語 MoshiRAG での追加。
++                # 推論時の意味論（1 フレームに 1 ベクトルを加算）と同一で、
++                # 加算を S 個まとめて行うだけ）。
++                assert condition_len in (1, S), (condition_len, S)
+                 assert streaming_sum_condition.shape[0] == input_.shape[0]
+                 input_ = input_ + streaming_sum_condition
+         if cross_attention_src is not None:

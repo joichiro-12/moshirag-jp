@@ -1,0 +1,26 @@
+#!/bin/bash
+# 工程 5b（前半）：語タイムスタンプから 12.5 Hz のテキストストリームを作る。
+# PAD/EPAD の構築まで。<ret> の置換は後段の別スクリプトで行う。
+# トークナイザは llm-jp/j-moshi-v1 の tokenizer_spm_32k_3.model、
+# text_padding_id は moshi_lm_kwargs.json の existing_text_padding_id = 3。
+#PBS -P gcg51557
+#PBS -q rt_HC
+#PBS -l select=1
+#PBS -l walltime=6:00:00
+#PBS -N 0374_s5b
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+B=/groups/gcg51557/experiments/0374_japanese_kame
+uv run --extra data -m tools.tokenize_text \
+  --word_transcript_dir $B/stage5_words \
+  --output_dir          $B/stage5_tokenized_text \
+  --text_tokenizer_repo llm-jp/j-moshi-v1 \
+  --text_tokenizer_name tokenizer_spm_32k_3.model \
+  --text_padding_id 3 \
+  --end_of_text_padding_id 0 \
+  --audio_tokenizer_frame_rate 12.5 \
+  --no_whitespace_before_word \
+  --num_workers 32 \
+  --allow_alignment_warnings

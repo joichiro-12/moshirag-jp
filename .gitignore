@@ -43,3 +43,4 @@ vllm_server.log
 
 # local venvs
 .venv*
+_arc_cache/

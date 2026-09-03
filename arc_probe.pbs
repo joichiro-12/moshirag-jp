@@ -1,0 +1,23 @@
+#!/bin/bash
+# ARC-Encoder が日本語を 4 倍圧縮しても情報を保てるかの測定（論文 Table 1 の枠組み）
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=02:00:00
+#PBS -N 0374_arc_probe
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+B=/groups/gcg51557/experiments/0374_japanese_kame
+echo "===== $(date) $(hostname) ====="; nvidia-smi --query-gpu=name,memory.total --format=csv,noheader
+uv run --no-project --with torch --with transformers --with safetensors --with huggingface_hub \
+    --with sentencepiece --with protobuf --with accelerate \
+    python scripts/japanese_kame/arc_ja_probe.py \
+      --arc_src "$B/arc_probe_src.py" \
+      --pilot_dir data/moshirag_jp/pilot5k \
+      --n 100 2>&1 | tail -60
+date
