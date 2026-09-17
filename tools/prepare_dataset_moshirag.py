@@ -14,7 +14,8 @@ MoshiRAG に必要な次の 2 つを持たない。ここで足す。
    トークンを探し、その直前に置く規則に変えると 99.5%（5,116/5,144）が EPAD に着地する。
 
 2. 参照埋め込みの持ち回り
-   ARC-Encoder の出力（4096 次元）を、`<ret>` の位置と対にして parquet に載せる。
+   ARC-Encoder の出力（**3072 次元。bridge の手前**）を、`<ret>` の位置と対にして載せる。
+   射影層（bridge）は学習対象なので、通した後の値を焼き込んではいけない（論文 §4.2）。
    KAME の oracle 列と同じく、可変長を values + offsets で平坦化して持つ。
 
 チャネル配置は元実装に合わせる（`lm.py` の num_codebooks = n_q + 1 = 17、
@@ -39,7 +40,7 @@ audio_offset = 1、needed_tokens = num_codebooks - dep_q - 1 = 8 から確定）
                                               学習時の遅延サンプリング d' に使う。
                                               d' は毎エポック引き直すので学習時に必要
     ref_offsets                             … 各参照の埋め込み開始位置 [R+1]
-    ref_values                              … 埋め込みを平坦化したもの [sum(L), 4096] float16
+    ref_values                              … 埋め込みを平坦化したもの [sum(L), 3072] float16
 """
 from __future__ import annotations
 
@@ -93,6 +94,8 @@ def main():
     p.add_argument("--text_padding_id", type=int, default=PAD_DEFAULT)
     p.add_argument("--end_of_text_padding_id", type=int, default=EPAD_DEFAULT)
     p.add_argument("--rag_token_id", type=int, default=RET_DEFAULT)
+    p.add_argument("--ref_dim", type=int, default=3072,
+                   help="参照埋め込みの次元。参照を持たない会話の既定値にも使う")
     p.add_argument("--num_examples_per_parquet", type=int, default=2000)
     a = p.parse_args()
 
@@ -129,7 +132,7 @@ def main():
             vals = [embeds[off[k]:off[k + 1]] for k in keep]
             new_off = np.concatenate([[0], np.cumsum([len(v) for v in vals])]).astype(np.int32)
             new_val = (np.concatenate(vals, 0) if vals
-                       else np.zeros((0, embeds.shape[1] if embeds.size else 4096), np.float16))
+                       else np.zeros((0, embeds.shape[1] if embeds.size else a.ref_dim), np.float16))
 
             rows.append({
                 "dialogue_id": f"{os.path.basename(a.output_prefix)}/{stem}",
@@ -139,7 +142,7 @@ def main():
                 "d_lead_frames": dlf[keep].tobytes() if len(keep) else np.zeros(0, np.int32).tobytes(),
                 "ref_offsets": new_off.tobytes(),
                 "ref_values": new_val.astype(np.float16).tobytes(),
-                "ref_dim": int(new_val.shape[1]) if new_val.size else 4096,
+                "ref_dim": int(new_val.shape[1]) if new_val.size else a.ref_dim,
             })
         out = f"{a.output_prefix}-{i+1:03d}-of-{nshard:03d}.parquet"
         pd.DataFrame(rows).to_parquet(out, index=False)

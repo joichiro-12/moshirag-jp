@@ -2,8 +2,8 @@
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
-#PBS -l walltime=3:00:00
-#PBS -N 0374_s5c
+#PBS -l walltime=1:00:00
+#PBS -N 0374_eval1
 #PBS -j oe
 set -u
 cd "${PBS_O_WORKDIR:-$(pwd)}"
@@ -12,6 +12,4 @@ source /etc/profile.d/modules.sh 2>/dev/null || true
 module load cuda/12.6 2>/dev/null || true
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-B=/groups/gcg51557/experiments/0374_japanese_kame
-uv run --extra data python stage5c_refembed.py \
-  --ret_dir $B/pilot5k_ret --stems $B/pilot5k_clean.txt --out $B/stage5_ref_embed
+uv run --extra data python eval_ref_contribution.py --n_conv 80

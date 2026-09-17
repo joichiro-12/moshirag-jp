@@ -1,0 +1,35 @@
+#!/bin/bash
+#PBS -P gcg51557
+#PBS -q rt_HF
+#PBS -l select=1
+#PBS -l walltime=6:00:00
+#PBS -N 0374_d4_10k
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || true
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+B=/groups/gcg51557/experiments/0374_japanese_kame
+
+# 更新回数だけを d3b（1,000 ステップ）から変える。バッチ・学習率・乱数種は据え置き。
+# 途中の重みは 2,000 ステップごとに残す（学習は止めない。傾きを後から測るため）。
+echo "########## 学習：10,000 ステップ / バッチ 4 ##########"
+uv run --extra data python train_moshirag.py \
+  --stems $B/split_train.txt --n_conv 2430 \
+  --steps 10000 --batch 4 --lr 2e-6 --bridge_lr 1e-4 \
+  --save_every 2000 --save $B/ckpt_d4
+
+echo "########## <ret> の自力出力（10,000 ステップ後） ##########"
+uv run --extra data python eval_ret_emission.py --stems $B/split_eval.txt --n_conv 200 \
+  --ckpt $B/ckpt_d4/model.safetensors
+
+echo "########## body トークンの正答率（10,000 ステップ後） ##########"
+uv run --extra data python eval_body_tokens.py --stems $B/split_eval.txt --n_conv 200 --n_show 5 \
+  --ckpt $B/ckpt_d4/model.safetensors --bridge_ckpt $B/ckpt_d4/bridge.safetensors
+
+echo "########## リファレンスの寄与（損失、10,000 ステップ後） ##########"
+uv run --extra data python eval_ref_contribution.py --stems $B/split_eval.txt --n_conv 200 \
+  --ckpt $B/ckpt_d4/model.safetensors --bridge_ckpt $B/ckpt_d4/bridge.safetensors

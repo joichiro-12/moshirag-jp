@@ -572,8 +572,13 @@ def main(args) -> None:
         return stem, "FAIL"
 
     ok = fail = 0
+    # シャード分割。添字 i は分割前のものを保つ（stem と乱数種が i から決まるため、
+    # 分割の有無で生成結果が変わらない）。
+    targets = [(i, qa) for i, qa in enumerate(rows) if i % args.nshard == args.shard]
+    print(f"  シャード {args.shard}/{args.nshard}: 担当 {len(targets)} 件 / 全 {len(rows)} 件",
+          flush=True)
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
-        futs = [ex.submit(work, i, qa) for i, qa in enumerate(rows)]
+        futs = [ex.submit(work, i, qa) for i, qa in targets]
         for fu in as_completed(futs):
             stem, msg = fu.result()
             ok += not msg.startswith("FAIL")
@@ -586,6 +591,10 @@ def main(args) -> None:
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--input_file", required=True)
+    p.add_argument("--shard", type=int, default=0,
+                   help="担当するシャード番号（0 起算）")
+    p.add_argument("--nshard", type=int, default=1,
+                   help="シャード総数。i %% nshard == shard の会話だけを生成する")
     p.add_argument("--output_dir", required=True)
     p.add_argument("--num_samples", type=int, default=20)
     p.add_argument("--model", default="llm-jp-4-32b-a3b-thinking")
