@@ -44,3 +44,4 @@ vllm_server.log
 # local venvs
 .venv*
 _arc_cache/
+data/japanese_kame/qa_pairs/wiki_candidates.jsonl
