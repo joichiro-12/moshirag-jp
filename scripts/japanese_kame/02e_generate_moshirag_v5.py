@@ -478,15 +478,21 @@ def generate(qa, client, model, rng, args) -> dict:
     tr = "\n".join(f"{w}: {t}" for w, t in plain)
     verdict_raw = call(client, model, JUDGE_ROLE,
                        f"資料:\n{ch}\n会話:\n{tr}\n\n判定:", args.effort_judge)
-    used: dict[int, int | None] = {}
+    # 判定役は 1 つの発話に複数の資料を挙げることがある（例「2: 1,2」）。すべて拾う。
+    # 以前は最初の番号しか拾わず、2 本目以降の資料の内容が body に出ているのに
+    # Reference 行に載らなかった（augmented ターンの 16〜18% が該当。2026-09-26 に修正）。
+    used: dict[int, list[int]] = {}
     for line in verdict_raw.splitlines():
         m = re.match(r"\s*(\d+)\s*[:：]\s*(.+)", line)
         if not m:
             continue
         idx = int(m.group(1))
         val = m.group(2).strip()
-        mm = re.search(r"\d+", val)
-        used[idx] = int(mm.group()) if (mm and "なし" not in val) else None
+        if "なし" in val:
+            used[idx] = []
+            continue
+        nums = [int(x) for x in re.findall(r"\d+", val)]
+        used[idx] = [n for n in dict.fromkeys(nums) if 1 <= n <= len(chunks)]
 
     # ---- stage 2b : assemble the record --------------------------------------------
     record: list[str] = []
@@ -497,8 +503,8 @@ def generate(qa, client, model, rng, args) -> dict:
             record.append(f"Human: {text}")
             continue
         a_no += 1
-        cidx = used.get(a_no)
-        if a_no == 1 or cidx is None or not (1 <= cidx <= len(chunks)):
+        cidx = used.get(a_no) or []
+        if a_no == 1 or not cidx:
             record.append("(unaugmented)")
             record.append(f"moshi: {text}")
             continue
@@ -512,7 +518,7 @@ def generate(qa, client, model, rng, args) -> dict:
         lead = strip_label(lead, "前置き", "moshi (lead)", "moshi")
         record.append("(augmented)")
         record.append(f"moshi (lead): {lead}")
-        record.append(f"Reference: {chunks[cidx - 1]}")
+        record.append(f"Reference: {' '.join(chunks[c - 1] for c in cidx)}")
         # subtopic dropped: it is generation-time metadata that never reaches the text
         # stream, and deriving it from the seed question produced garbage. The chunk
         # index is recorded in the JSON instead, which is more useful for analysis.
