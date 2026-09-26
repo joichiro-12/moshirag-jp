@@ -1,0 +1,70 @@
+#!/bin/bash
+# 音声化の本番。rt_HF の 1 ノード（8 GPU）で 8 シャードを並列に処理する。
+#
+#   for n in 0 1 2 3; do qsub -P gcg51557 -v NODE=$n,NNODE=4 synth_node.pbs; done
+#
+# ## なぜこの形か
+#
+# 既存の synth_shard.pbs は rt_HG（1 GPU）× 32 ジョブで回し、9/20 に全 32 本が
+# 一斉停止した。原因は不明だが、rt_HG は待機 852 件と混んでいる。
+# rt_HF に 8 シャードずつ詰めれば、**GPU 数は同じ 32 のままジョブ数が 4 になる**。
+#
+# 各 GPU では synth_worker.py がモデルを 1 回だけ読み込み、担当分をまとめて処理する
+# （会話ごとの読み込みを省く）。**使い回しで出力が変わらないことは
+# synth_verify.pbs で確認してから使う。**
+#
+# 既に .wav がある会話は飛ばすので、何度投げても未処理分だけが埋まる。
+#PBS -P gcg51557
+#PBS -q rt_HF
+#PBS -l select=1
+#PBS -l walltime=48:00:00
+#PBS -N 0374_synth_node
+#PBS -j oe
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+
+NODE="${NODE:-0}"; NNODE="${NNODE:-1}"
+GPUS=8
+NSHARD=$((NNODE * GPUS))
+IN_DIR="${IN_DIR:-/groups/gcg51557/experiments/0374_japanese_kame/pilot5k_in}"
+OUT_DIR="${OUT_DIR:-/groups/gcg51557/experiments/0374_japanese_kame/pilot5k_audio}"
+
+B=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$B/tts/zoom1-tts
+W=$PWD/tools/synth_worker.py
+LOGD=$PWD/logs/synth_node_${PBS_JOBID:-local}
+mkdir -p "$LOGD"
+
+echo "===== $(date) $(hostname) ノード ${NODE}/${NNODE}（シャード総数 ${NSHARD}）====="
+git rev-parse --short HEAD; git status --porcelain | grep -v '^??' | wc -l
+echo "入力 $IN_DIR"
+echo "出力 $OUT_DIR"
+echo "開始時点の wav: $(find "$OUT_DIR" -maxdepth 1 -name '*.wav' | wc -l)"
+
+cd "$TTS"
+S=$(date +%s)
+for g in $(seq 0 $((GPUS - 1))); do
+    SHARD=$((NODE * GPUS + g))
+    CUDA_VISIBLE_DEVICES=$g uv run python "$W" \
+        --in_dir "$IN_DIR" --out_dir "$OUT_DIR" \
+        --shard "$SHARD" --nshard "$NSHARD" \
+        > "$LOGD/shard${SHARD}.log" 2>&1 &
+    echo "  GPU $g → シャード $SHARD（pid $!）"
+done
+wait
+E=$(date +%s)
+
+echo "===== 終了 $(date) ====="
+echo "経過 $((E-S)) 秒"
+echo "終了時点の wav: $(find "$OUT_DIR" -maxdepth 1 -name '*.wav' | wc -l)"
+for g in $(seq 0 $((GPUS - 1))); do
+    SHARD=$((NODE * GPUS + g))
+    echo "--- シャード $SHARD ---"
+    grep -E "合成 |秒/会話|失敗|読み込み回数" "$LOGD/shard${SHARD}.log" | tail -4
+done
