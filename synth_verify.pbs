@@ -1,0 +1,42 @@
+#!/bin/bash
+# 音声化の高速化が成立するかを確かめる。
+#
+# 確かめることは 2 つ。
+#   ① モデルを使い回しても出力が変わらないか（既存 wav と突き合わせる）
+#   ② モデル読み込みが 100 秒/会話のうちどれだけを占めるか
+#
+# 音声化は工程全体の律速で、会話生成の 10.4 倍の GPU 時間を使う。
+# ①が成立しないなら使い回せないので、この方向は捨てる。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=01:00:00
+#PBS -N 0374_synth_verify
+#PBS -j oe
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+
+B=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$B/tts/zoom1-tts
+W=$PWD/tools/synth_worker.py
+
+echo "===== $(date) $(hostname) ====="
+git rev-parse --short HEAD; git status --porcelain | wc -l
+
+cd "$TTS"
+
+echo "########## ① 出力が変わらないか（既存 5 件と突き合わせ） ##########"
+uv run python "$W" \
+    --in_dir $B/pilot5k_in --out_dir $B/pilot5k_audio \
+    --nshard 1 --shard 0 --verify 5
+
+echo
+echo "########## ② 連続合成の速度（未合成 15 件） ##########"
+uv run python "$W" \
+    --in_dir $B/pilot5k_in --out_dir $B/pilot5k_audio \
+    --nshard 1 --shard 0 --limit 15
