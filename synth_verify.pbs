@@ -2,11 +2,16 @@
 # 音声化の高速化が成立するかを確かめる。
 #
 # 確かめることは 2 つ。
-#   ① モデルを使い回しても出力が変わらないか（既存 wav と突き合わせる）
+#   ① モデルを使い回しても出力が変わらないか
 #   ② モデル読み込みが 100 秒/会話のうちどれだけを占めるか
 #
-# 音声化は工程全体の律速で、会話生成の 10.4 倍の GPU 時間を使う。
-# ①が成立しないなら使い回せないので、この方向は捨てる。
+# ①は既存 wav とのハッシュ比較では判定できない。GPU 演算は完全には決定的でなく、
+# TTS は温度 0.9 でサンプリングするため、微小な数値差が別の音声を生みうる。
+# そこで**同一プロセス内で同じ会話を 2 回合成**し、「連続」と「間に別の会話を挟む」を比べる。
+#
+# ②は 1 回目（読み込み直後）と 2 回目以降の所要の差から出す。
+#
+# 本番ディレクトリには書かない（_verify/ 以下にだけ書く）。
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
@@ -27,17 +32,9 @@ TTS=$B/tts/zoom1-tts
 W=$PWD/tools/synth_worker.py
 
 echo "===== $(date) $(hostname) ====="
-git rev-parse --short HEAD; git status --porcelain | wc -l
+git rev-parse --short HEAD; git status --porcelain | grep -v '^??' | wc -l
 
 cd "$TTS"
-
-echo "########## ① 出力が変わらないか（既存 5 件と突き合わせ） ##########"
 uv run python "$W" \
     --in_dir $B/pilot5k_in --out_dir $B/pilot5k_audio \
-    --nshard 1 --shard 0 --verify 5
-
-echo
-echo "########## ② 連続合成の速度（未合成 15 件） ##########"
-uv run python "$W" \
-    --in_dir $B/pilot5k_in --out_dir $B/pilot5k_audio \
-    --nshard 1 --shard 0 --limit 15
+    --nshard 1 --shard 0 --verify 4

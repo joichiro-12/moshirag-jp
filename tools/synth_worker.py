@@ -96,23 +96,55 @@ def main():
         )
 
     if a.verify:
-        # 既存 wav と一致するかを見る。1 プロセス内で連続合成し、状態の漏れを検出する。
-        done = [f for f in targets if (out_dir / f"{f.stem}.wav").exists()][: a.verify]
-        print(f"\n=== 検証: 既存 {len(done)} 件を同一プロセスで再合成して突き合わせる ===",
-              flush=True)
+        # 状態の漏れと GPU の非決定性を区別するため、同一プロセス内で 2 種の比較をする。
+        #   A: 同じ会話を連続して 2 回合成する（間に何も挟まない）
+        #   B: 同じ会話を、間に別の会話を挟んで 2 回合成する
+        # A が一致して B が一致しなければ状態の漏れ。A から一致しなければ非決定性であり、
+        # ハッシュ比較では漏れを判定できない（その場合は長さで見る）。
+        # 既存 wav との比較は参考値として残す（プロセスも GPU も違うので一致を期待しない）。
+        import soundfile as sf
+        pool = [f for f in targets if (out_dir / f"{f.stem}.wav").exists()]
+        x, others = pool[0], pool[1: 1 + max(a.verify - 1, 2)]
         tmp = out_dir / "_verify"
         tmp.mkdir(exist_ok=True)
-        ok = ng = 0
-        for k, f in enumerate(done, 1):
+
+        def synth(f, tag):
+            p = tmp / f"{f.stem}.{tag}.wav"
             t0 = time.time()
-            run(f, tmp / f"{f.stem}.wav")
-            same = sha(out_dir / f"{f.stem}.wav") == sha(tmp / f"{f.stem}.wav")
-            ok, ng = (ok + 1, ng) if same else (ok, ng + 1)
-            print(f"  {k}/{len(done)} {f.stem}: "
-                  f"{'一致' if same else '**不一致**'}  {time.time()-t0:.1f} 秒", flush=True)
-        print(f"\n  一致 {ok} / 不一致 {ng}")
-        print("  判定:", "モデルの使い回しは安全" if ng == 0
-              else "**状態が漏れている。使い回してはいけない**")
+            run(f, p)
+            return p, time.time() - t0
+
+        def nsamp(p):
+            return sf.info(str(p)).frames
+
+        print(f"\n=== 検証（対象 {x.stem}、挟む会話 {len(others)} 件）===", flush=True)
+        p1, t1 = synth(x, "a1")
+        p2, t2 = synth(x, "a2")
+        for k, o in enumerate(others):
+            synth(o, f"mid{k}")
+        p3, t3 = synth(x, "b")
+
+        h1, h2, h3 = sha(p1), sha(p2), sha(p3)
+        n1, n2, n3 = nsamp(p1), nsamp(p2), nsamp(p3)
+        n0 = nsamp(out_dir / f"{x.stem}.wav")
+        print(f"  1 回目（読み込み直後） {t1:5.1f} 秒  {n1:,} サンプル")
+        print(f"  2 回目（連続）         {t2:5.1f} 秒  {n2:,} サンプル  "
+              f"{'一致' if h1 == h2 else '不一致'}")
+        print(f"  3 回目（{len(others)} 件を挟む）   {t3:5.1f} 秒  {n3:,} サンプル  "
+              f"{'一致' if h1 == h3 else '不一致'}")
+        print(f"  参考：既存 wav（別プロセス）{n0:,} サンプル  "
+              f"{'一致' if sha(out_dir / f'{x.stem}.wav') == h1 else '不一致'}")
+
+        if h1 == h2 == h3:
+            print("\n  判定: **モデルの使い回しは安全**（同一プロセス内で決定的、挟んでも変わらない）")
+        elif h1 == h2 and h1 != h3:
+            print("\n  判定: **状態が漏れている。使い回してはいけない**")
+        else:
+            print("\n  判定: **同一プロセス内でも非決定的。ハッシュでは漏れを判定できない**")
+            print(f"        長さの差 A={abs(n1-n2):,} / B={abs(n1-n3):,} サンプル。"
+                  "B が A より桁違いに大きければ漏れを疑う")
+        print(f"\n  読み込みを除いた 1 会話の合成時間の目安: {min(t2, t3):.1f} 秒"
+              f"（読み込み込みの 1 回目は {t1:.1f} 秒）")
         return
 
     n = skip = fail = 0
