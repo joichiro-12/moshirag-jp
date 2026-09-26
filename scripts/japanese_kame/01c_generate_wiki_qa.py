@@ -76,6 +76,65 @@ Wikipedia の記事の冒頭を渡します。その内容から、**会話の�
 スキップ"""
 
 
+# 既定より厳しい判定。対象そのものの知名度を見る。
+# 既定は 1.6% しか落とさず、無名の人物・地方の施設が残った（パイロット 1,000 件で確認）。
+QA_ROLE_STRICT = """\
+Wikipedia の記事の冒頭を渡します。その内容から、**会話の中で自然に出てきそうな問い**と、
+その答えを 1 組作ってください。
+
+まず、**その記事の対象を、人が雑談や相談の中で自発的に持ち出すか**を判断してください。
+持ち出さないものは、問いを作らず「スキップ」とだけ書いてください。
+
+**スキップするもの（対象そのものが知られていない）**
+
+- 専門家の間でしか知られていない人物。地方の実業家、地域史の人物、脇役の研究者など
+- 外国のスポーツ選手・芸能人のうち、日本でほとんど報じられない人
+- 地方の施設、団体の支部、道路、バスの営業所、個別の建物
+- 作品に付随するもの（サウンドトラック、単発のイベント、個別の話数）
+- 個別の艦船・車両・機体のうち、事件や事故で知られていないもの
+- 統計や年表だけで構成され、人が尋ねる内容が無いもの
+
+**残すもの（対象が知られている、または誰でも関心を持ちうる）**
+
+- 歴史上の出来事、よく知られた人物、国や地域、制度や法律
+- 食べ物、動植物、自然現象、病気、技術、学問の概念
+- 広く知られた作品・企業・製品・スポーツチーム
+- 日常で話題になる物事（天気、交通、健康、料理、旅行など）
+
+残す場合は次の条件で問いと答えを作ってください。
+
+- 答えは**記事に書かれている事実**にする。記事に無いことを書かない
+- 答えは短くする。固有名詞・数値・短い語句
+- 問いは、記事を読んでいない人が口に出しそうなものにする
+- 問いに答えを含めない
+
+出力は次の 2 行だけ。スキップの場合は「スキップ」の 1 行だけ。
+
+問い: ...
+答え: ...
+
+例：
+
+記事タイトル: 手塚治虫
+記事冒頭: 手塚 治虫（てづか おさむ、1928年11月3日 - 1989年2月9日）は、日本の漫画家、
+アニメーター、アニメーション監督。医師免許取得者であり、医学博士...
+
+問い: 漫画家で医師免許も持っていた人っていましたよね、誰でしたっけ
+答え: 手塚治虫
+
+記事タイトル: 黒田茂助
+記事冒頭: 黒田 茂助（くろだ もすけ）は、明治期の漆器商。石川県に生まれ...
+
+スキップ
+
+記事タイトル: 東急バス高津営業所
+記事冒頭: 東急バス高津営業所は、神奈川県川崎市高津区に所在する東急バスの営業所...
+
+スキップ"""
+
+ROLES = {"default": QA_ROLE, "strict": QA_ROLE_STRICT}
+
+
 def parse(out: str) -> tuple[str, str] | None:
     """「問い: … / 答え: …」を取り出す。スキップまたは解釈できない形なら None。"""
     if "スキップ" in out[:20]:
@@ -102,6 +161,8 @@ def main():
     ap.add_argument("--nshard", type=int, default=1)
     ap.add_argument("--workers", type=int, default=32)
     ap.add_argument("--effort", default="low")
+    ap.add_argument("--role", default="default", choices=["default", "strict"],
+                    help="判定プロンプト。strict は対象の知名度を見る")
     ap.add_argument("--model", required=True)
     ap.add_argument("--llm_base_url", default=None)
     ap.add_argument("--api_key", default=None)
@@ -117,8 +178,8 @@ def main():
         rows = rows[: a.num_samples]
     # 添字は分割前のまま保つ（再開時の同一性のため）
     targets = [(i, r) for i, r in enumerate(rows) if i % a.nshard == a.shard]
-    print(f"  候補 {len(rows):,} 件 / シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件",
-          flush=True)
+    print(f"  判定プロンプト: {a.role} / 候補 {len(rows):,} 件 / "
+          f"シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件", flush=True)
 
     # 既に書いた記事は飛ばす（--resume 相当）
     done = set()
@@ -136,7 +197,7 @@ def main():
         if r["wiki_id"] in done:
             return "skip_done", None
         try:
-            out = call(client, a.model, QA_ROLE,
+            out = call(client, a.model, ROLES[a.role],
                        f"記事タイトル: {r['title']}\n記事冒頭: {r['lead']}",
                        a.effort)
         except Exception as e:  # noqa: BLE001
