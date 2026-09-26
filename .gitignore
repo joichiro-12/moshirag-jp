@@ -47,3 +47,4 @@ _arc_cache/
 data/japanese_kame/qa_pairs/wiki_candidates.jsonl
 data/japanese_kame/qa_pairs/wiki_qa_pilot.jsonl
 data/japanese_kame/qa_pairs/wiki_qa_strict.jsonl
+data/japanese_kame/qa_pairs/wiki_qa*.jsonl

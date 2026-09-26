@@ -181,9 +181,16 @@ def main():
     print(f"  判定プロンプト: {a.role} / 候補 {len(rows):,} 件 / "
           f"シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件", flush=True)
 
+    # 出力はシャードごとに分ける。共有ファイルへの並行追記はノードをまたぐと
+    # 保護できないため（スレッドロックはプロセス内にしか効かない）。
+    out_path = Path(a.output_file)
+    if a.nshard > 1:
+        out_path = out_path.with_name(
+            f"{out_path.stem}.s{a.shard:03d}of{a.nshard:03d}{out_path.suffix}")
+        print(f"  出力: {out_path.name}", flush=True)
+
     # 既に書いた記事は飛ばす（--resume 相当）
     done = set()
-    out_path = Path(a.output_file)
     if out_path.exists():
         for l in out_path.open(encoding="utf-8"):
             try:
