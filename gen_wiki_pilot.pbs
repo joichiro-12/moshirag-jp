@@ -1,0 +1,81 @@
+#!/bin/bash
+# Wikipedia 由来の QA から会話を生成する（パイロット 300 会話）。
+#
+# 測りたいのは 1 点。**`<ret>` を持つ会話の割合**。
+# JaQuAD 由来では 54.1%（2,630 / 4,862）で、残り 46% は学習に使えていない。
+#
+# Wikipedia 由来の話題はモデルが知らないものが多いため、「調べないと答えられない」
+# ターンが増え、この割合が上がる可能性がある。上がれば、話題が無名であることは
+# RAG の学習データとして有利だという直接の証拠になる。
+#
+# 生成条件は JaQuAD 側と揃える（--min_turns 3 --max_turns 5、effort も同じ）。
+# 揃えないと、割合の差が入力の差なのか生成条件の差なのか分離できない。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=02:00:00
+#PBS -N 0374_gen_wiki_pilot
+#PBS -j oe
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/13.0 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+export VLLM_USE_FLASHINFER_SAMPLER=0 HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_CACHE_ROOT=/tmp/vllm_cache_${USER}_gwp
+export TORCHINDUCTOR_CACHE_DIR=/tmp/inductor_${USER}_gwp
+export TRITON_CACHE_DIR=/tmp/triton_${USER}_gwp
+mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
+
+MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
+VENV=.venv_vllm; PORT=8102; NAME=llm-jp-4-32b-a3b-thinking
+SCRIPT=scripts/japanese_kame/02e_generate_moshirag_v5.py
+IN=data/japanese_kame/qa_pairs/wiki_qa_pilot.jsonl
+OUT=data/moshirag_jp/wiki_pilot
+
+echo "===== $(date) $(hostname) ====="
+git rev-parse --short HEAD; git status --porcelain | wc -l
+mkdir -p "$OUT"
+
+$VENV/bin/python -m vllm.entrypoints.openai.api_server \
+    --model "$MODEL" --served-model-name "$NAME" \
+    --max-model-len 16384 --gpu-memory-utilization 0.90 --enforce-eager \
+    --port "$PORT" > vllm_server_gwp.log 2>&1 &
+VLLM_PID=$!
+trap 'kill "$VLLM_PID" 2>/dev/null || true' EXIT
+
+for i in $(seq 1 150); do
+    curl -s -o /dev/null "http://localhost:${PORT}/v1/models" && { echo "vLLM ready ($((i*10))s)"; break; }
+    kill -0 "$VLLM_PID" 2>/dev/null || { echo "!! vLLM died"; tail -40 vllm_server_gwp.log; exit 1; }
+    sleep 10
+done
+
+S=$(date +%s)
+$VENV/bin/python "$SCRIPT" \
+    --input_file "$IN" \
+    --output_dir "$OUT" --num_samples 300 --seed 1 \
+    --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" \
+    --min_turns 3 --max_turns 5 --workers 32 \
+    --effort_human high --effort_assistant low --effort_chunk low \
+    --effort_judge low --effort_lead low --resume 2>&1 | tail -20
+E=$(date +%s)
+
+echo "===== 終了 $(date) ====="
+echo "経過 $((E-S)) 秒 / 生成 $(ls "$OUT"/*.json 2>/dev/null | wc -l) 件"
+
+echo "--- <ret> を持つ会話の割合 ---"
+python3 -c "
+import glob, json
+fs = glob.glob('$OUT/*.json')
+n = len(fs); withret = 0; tot = 0
+for f in fs:
+    d = json.load(open(f, encoding='utf-8'))
+    k = sum(1 for l in d['record'] if l.startswith('Reference:'))
+    tot += k
+    if k: withret += 1
+print(f'  会話 {n} 件 / <ret> を持つ {withret} 件（{100*withret/max(n,1):.1f}%）')
+print(f'  augmented ターン合計 {tot} 件（1 会話あたり {tot/max(n,1):.2f}）')
+print(f'  ※ JaQuAD 由来は 54.1%（2,630 / 4,862）、1 会話あたり 1.08')
+"
