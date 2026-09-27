@@ -4,9 +4,9 @@
 #   for s in 0 1 2 3 4 5; do qsub -v SHARD=$s,NSHARD=6 synth_hg.pbs; done
 #
 # 前の回が正常に終わったときだけ次の回を走らせる予約は、アレイジョブ 1 件にまとめて入れる
-# （キューに並ぶ件数を 8 月の最大 7 件より増やさないため）。添字がシャード番号になる。
+# （キューに並ぶ件数を 8 月の最大 7 件より増やさないため）。添字 − 1 がシャード番号になる。
 #
-#   qsub -J 0-5 -v NSHARD=6 -W depend=afterok:<前の回の 6 本のジョブ番号を : でつなぐ> synth_hg.pbs
+#   qsub -J 1-6 -v NSHARD=6 -W depend=afterok:<前の回の 6 本のジョブ番号を : でつなぐ> synth_hg.pbs
 #
 # 前の回が 1 本でも異常終了（管理者の削除・walltime 超過）すると、予約は走らずに取り消される。
 # ## 8 月（synth_shard.pbs）との違い
@@ -48,7 +48,9 @@ export http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY
 export NO_PROXY="" no_proxy=""
 export AUDIT_NET=1
 
-SHARD="${PBS_ARRAY_INDEX:-${SHARD:-0}}"; NSHARD="${NSHARD:-6}"
+# アレイジョブの添字は ABCI では 1 始まりしか許されない（-J 1-6）。1 を引いてシャード番号にする
+if [ -n "${PBS_ARRAY_INDEX:-}" ]; then SHARD=$((PBS_ARRAY_INDEX - 1)); else SHARD="${SHARD:-0}"; fi
+NSHARD="${NSHARD:-6}"
 B=/groups/gcg51557/experiments/0374_japanese_kame
 TTS=$B/tts/zoom1-tts
 PY=$TTS/.venv/bin/python
