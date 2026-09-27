@@ -1,0 +1,61 @@
+#!/bin/bash
+# 語アライメント（工程 ⑥）を ABCI の CPU ノードで回せるかの試験。
+#
+#   qsub -P gcg51557 align_test.pbs
+#
+# ## 何を確かめるか
+#
+#   ① g21 から conda-pack で運んだ MFA 3.4.2 が、計算ノードで動くか
+#   ② 同じ 20 会話を g21 で揃えた結果と一致するか（一致の確認。両方 -j 8）
+#   ③ 500 会話を -j 32 で揃えたときの速さと、揃ったターンの割合（速さの確認）
+#
+# MFA は話者ごとに適応をかけるため、あるターンの揃え方が、同じコーパスに入っている
+# 他の会話に左右されうる。そのため一致の確認は、g21 と同じ 20 会話だけのコーパスで行う。
+#
+# GPU を確保せずに CPU キュー（rt_HC、1 ジョブ 32 コア）で回す。
+#PBS -P gcg51557
+#PBS -q rt_HC
+#PBS -l select=1
+#PBS -l walltime=03:00:00
+#PBS -N 0374_align_test
+#PBS -j oe
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+
+# 外部に出ない設定（MFA はモデルが手元にあれば外部に接続しない想定。念のため塞ぐ）
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
+export http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY
+export NO_PROXY="" no_proxy=""
+
+B=/groups/gcg51557/experiments/0374_japanese_kame
+ENV=$HOME/mfa_env          # g21 の ~/miniforge3/envs/mfa を conda-pack で運んだもの
+A=$HOME/mfa_assets         # g21 の ~/Documents/MFA の pretrained_models・global_config.yaml と ~/mfa_beam.yaml
+T=$B/align_test
+L=${PBS_LOCALDIR:-/tmp}/align_$$
+mkdir -p "$L" "$T"
+
+# MFA の作業場所（MFA_ROOT_DIR）はノードのローカルディスクに置き、モデルと設定を写す
+export MFA_ROOT_DIR=$L/mfa_root
+mkdir -p "$MFA_ROOT_DIR"
+cp -r "$A/pretrained_models" "$MFA_ROOT_DIR/"
+sed "s|^temporary_directory:.*|temporary_directory: $MFA_ROOT_DIR|" "$A/global_config.yaml" \
+    > "$MFA_ROOT_DIR/global_config.yaml"
+export PATH=$ENV/bin:$PATH
+
+echo "===== $(date) $(hostname) ====="
+git rev-parse --short HEAD
+echo "CPU $(nproc) / 作業場所 $L"
+"$ENV/bin/mfa" version
+
+for c in "cmp20 8" "speed500 32"; do
+    set -- $c; name=$1; j=$2
+    echo "===== $name（-j $j）$(date) ====="
+    S=$(date +%s)
+    "$ENV/bin/python" tools/mfa_align.py --audio_dir "$B/wiki_audio" --stems "$T/$name.txt" \
+        --work "$L/$name" --words_dir "$T/words_$name" --mfa "$ENV/bin/mfa" \
+        --beam_config "$A/mfa_beam.yaml" -j "$j"
+    echo "  終了コード $? / 全体 $(( $(date +%s) - S )) 秒"
+    for f in "$L/$name"/mfa_pass*.log; do [ -f "$f" ] && cp "$f" "$T/${name}_$(basename "$f")"; done
+done
+echo "===== 終了 $(date) ====="
