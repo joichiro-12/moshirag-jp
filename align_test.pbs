@@ -41,7 +41,12 @@ mkdir -p "$MFA_ROOT_DIR"
 cp -r "$A/pretrained_models" "$MFA_ROOT_DIR/"
 sed "s|^temporary_directory:.*|temporary_directory: $MFA_ROOT_DIR|" "$A/global_config.yaml" \
     > "$MFA_ROOT_DIR/global_config.yaml"
-export PATH=$ENV/bin:$PATH
+export PATH=$ENV/bin:$PATH   # mfa の起動行は #!/usr/bin/env python3.14（conda-pack が書き換えた）なので必須
+
+# g21 の環境の kaldi は CUDA 版で、libcuda.so.1（NVIDIA ドライバ）に結びついている。
+# CPU ノードにはドライバが無いので、CUDA 12.6 の空のライブラリ（stub）を読ませて起動だけ通す。
+# 語アライメント（GMM）は CPU で計算するため、GPU は使わない想定。g21 との一致の確認で確かめる
+export LD_LIBRARY_PATH=$HOME/mfa_stubs${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}
 
 echo "===== $(date) $(hostname) ====="
 git rev-parse --short HEAD
