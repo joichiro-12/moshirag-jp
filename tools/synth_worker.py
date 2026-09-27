@@ -30,6 +30,39 @@ TTS_DIR = Path("/groups/gcg51557/experiments/0374_japanese_kame/tts/zoom1-tts")
 sys.path.insert(0, str(TTS_DIR))
 
 
+def install_net_audit() -> list:
+    """AUDIT_NET=1 のとき、外部への接続の試みをすべて記録する。
+
+    9/20・9/26 に音声化ジョブが管理者に削除された。9/20 は huggingface_hub が
+    HF_HUB_OFFLINE 無しで外部へ接続を試みていたことが分かっている。9/26 は設定済みだったが
+    消されたため、見落としている接続が無いかを確かめる。
+
+    名前の問い合わせ（getaddrinfo）と接続（connect）の宛先を標準エラーに書く。
+    ループバック（127.0.0.1 / ::1 / localhost）と UNIX ドメインソケットは記録しない。
+    戻り値は外部宛ての記録の一覧（終了時に件数を報告するため）。
+    """
+    import socket
+    hits: list = []
+    local = {"127.0.0.1", "::1", "localhost", "0.0.0.0", ""}
+
+    orig_gai = socket.getaddrinfo
+    def gai(host, *a, **k):
+        if str(host) not in local:
+            hits.append(("getaddrinfo", str(host)))
+            print(f"  [外部接続の試み] 名前の問い合わせ: {host}", file=sys.stderr, flush=True)
+        return orig_gai(host, *a, **k)
+    socket.getaddrinfo = gai
+
+    orig_connect = socket.socket.connect
+    def connect(self, address):
+        if isinstance(address, tuple) and address and str(address[0]) not in local:
+            hits.append(("connect", str(address)))
+            print(f"  [外部接続の試み] 接続: {address}", file=sys.stderr, flush=True)
+        return orig_connect(self, address)
+    socket.socket.connect = connect
+    return hits
+
+
 def install_model_cache() -> dict:
     """FireRedTTS2 をキャッシュ付きに差し替える。戻り値はキャッシュ辞書（件数確認用）。"""
     import fireredtts2.fireredtts2 as f2
@@ -68,6 +101,11 @@ def main():
     ap.add_argument("--verify", type=int, default=0,
                     help="既存 wav と一致するかを確かめる件数。合成結果は捨てる")
     a = ap.parse_args()
+
+    # 外部接続の監査は、モデルやライブラリを読み込む前に仕掛ける
+    net_hits = install_net_audit() if os.environ.get("AUDIT_NET") == "1" else None
+    if net_hits is not None:
+        print("  外部接続の監査: 有効", flush=True)
 
     cache = install_model_cache()
     from zoom1_dialogue_tts.model import resolve_model
@@ -171,6 +209,9 @@ def main():
     if n:
         print(f"  {el/n:.1f} 秒/会話（モデル読み込みを含む合計時間を件数で割った値）")
     print(f"  モデルの読み込み回数: {len(cache)}")
+    if net_hits is not None:
+        print(f"  外部接続の試み: {len(net_hits)} 件"
+              + ("（無し）" if not net_hits else f" → 宛先 {sorted(set(h[1] for h in net_hits))}"))
 
 
 if __name__ == "__main__":
