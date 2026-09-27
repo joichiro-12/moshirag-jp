@@ -100,7 +100,12 @@ def main():
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--verify", type=int, default=0,
                     help="既存 wav と一致するかを確かめる件数。合成結果は捨てる")
+    ap.add_argument("--max_seconds", type=float, default=0,
+                    help="起動からこの秒数を過ぎたら新しい会話を始めない（0 で無制限）。"
+                         "walltime で合成の途中に殺されると、書きかけの wav が次の回で"
+                         "完成品として飛ばされるため、walltime より手前で止める")
     a = ap.parse_args()
+    t_start = time.time()
 
     # 外部接続の監査は、モデルやライブラリを読み込む前に仕掛ける
     net_hits = install_net_audit() if os.environ.get("AUDIT_NET") == "1" else None
@@ -189,6 +194,9 @@ def main():
     t0 = time.time()
     for f in targets:
         if a.limit and n >= a.limit:
+            break
+        if a.max_seconds and time.time() - t_start > a.max_seconds:
+            print(f"  起動から {a.max_seconds:.0f} 秒を過ぎたので、新しい会話を始めずに止める", flush=True)
             break
         out = out_dir / f"{f.stem}.wav"
         if out.exists() and out.stat().st_size > 0:
