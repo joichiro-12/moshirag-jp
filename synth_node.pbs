@@ -32,6 +32,13 @@ source /etc/profile.d/modules.sh 2>/dev/null || true
 module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
 export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
 export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+# 外部に出ない保険（9/27 追加）。9/20 の削除は huggingface_hub の外部接続の試みが原因の
+# 可能性が高い。HTTP(S) は繋がらない代理サーバに向けてノードの外に出る前に失敗させ、
+# 接続先の監査（AUDIT_NET=1）で試みがあれば記録する。試験ジョブ 2450505 で外部接続 0 件を確認済み
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
+export http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY
+export NO_PROXY="" no_proxy=""
+export AUDIT_NET=1
 
 NODE="${NODE:-0}"; NNODE="${NNODE:-1}"; MODE="${MODE:-cli}"
 GPUS=8
@@ -91,5 +98,5 @@ echo "終了時点の wav: $(find "$OUT_DIR" -maxdepth 1 -name '*.wav' | wc -l)"
 for g in $(seq 0 $((GPUS - 1))); do
     SHARD=$((NODE * GPUS + g))
     echo "--- シャード $SHARD ---"
-    grep -E "合成 |秒/会話|失敗|読み込み回数" "$LOGD/shard${SHARD}.log" | tail -3
+    grep -E "合成 |秒/会話|読み込み回数|外部接続の試み:" "$LOGD/shard${SHARD}.log" | tail -4
 done
