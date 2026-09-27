@@ -63,6 +63,27 @@ def install_net_audit() -> list:
     return hits
 
 
+def with_retry(fn, what: str, tries: int = 6):
+    """起動が重なったジョブ同士の競合を、間を空けてやり直すことで避ける。
+
+    zoom1_dialogue_tts の resolve_model は、呼ばれるたびに
+    assembled/…/llm_posttrain.pt のシンボリックリンクを消して作り直す（model.py 78〜81 行）。
+    別のジョブがその瞬間にリンクを消す・読むと FileNotFoundError / FileExistsError になる
+    （9/27 の 2451945 で発生。同じ秒に起動した 2451944 と競合した）。
+    """
+    import random
+    for k in range(tries):
+        try:
+            return fn()
+        except (FileNotFoundError, FileExistsError) as e:
+            if k == tries - 1:
+                raise
+            w = random.uniform(5, 30)
+            print(f"  [{what}] 起動の重なりによる競合と考えられる失敗。{w:.0f} 秒後にやり直す: {e}",
+                  flush=True)
+            time.sleep(w)
+
+
 def install_model_cache() -> dict:
     """FireRedTTS2 をキャッシュ付きに差し替える。戻り値はキャッシュ辞書（件数確認用）。"""
     import fireredtts2.fireredtts2 as f2
@@ -73,7 +94,7 @@ def install_model_cache() -> dict:
         key = (kw.get("pretrained_dir"), kw.get("gen_type"), kw.get("device"))
         if key not in cache:
             t0 = time.time()
-            cache[key] = orig(*args, **kw)
+            cache[key] = with_retry(lambda: orig(*args, **kw), "モデルの読み込み")
             print(f"  [モデル読み込み] {time.time()-t0:.1f} 秒", flush=True)
         return cache[key]
 
@@ -118,7 +139,8 @@ def main():
     from zoom1_dialogue_tts.timing import TimingConfig
     from zoom1_dialogue_tts.script import load_script
 
-    model_dir = resolve_model("llm-jp/zoom1-dialogue-tts", "drop", None, None)
+    model_dir = with_retry(lambda: resolve_model("llm-jp/zoom1-dialogue-tts", "drop", None, None),
+                           "モデルの組み立て")
     in_dir, out_dir = Path(a.in_dir), Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
