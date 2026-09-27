@@ -3,6 +3,12 @@
 #
 #   for s in 0 1 2 3 4 5; do qsub -v SHARD=$s,NSHARD=6 synth_hg.pbs; done
 #
+# 前の回が正常に終わったときだけ次の回を走らせる予約は、アレイジョブ 1 件にまとめて入れる
+# （キューに並ぶ件数を 8 月の最大 7 件より増やさないため）。添字がシャード番号になる。
+#
+#   qsub -J 0-5 -v NSHARD=6 -W depend=afterok:<前の回の 6 本のジョブ番号を : でつなぐ> synth_hg.pbs
+#
+# 前の回が 1 本でも異常終了（管理者の削除・walltime 超過）すると、予約は走らずに取り消される。
 # ## 8 月（synth_shard.pbs）との違い
 #
 # キュー・GPU 数・walltime・ジョブ名・同時本数は 8 月と同じにしている。違いは次の 3 点だけ。
@@ -42,7 +48,7 @@ export http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY
 export NO_PROXY="" no_proxy=""
 export AUDIT_NET=1
 
-SHARD="${SHARD:-0}"; NSHARD="${NSHARD:-6}"
+SHARD="${PBS_ARRAY_INDEX:-${SHARD:-0}}"; NSHARD="${NSHARD:-6}"
 B=/groups/gcg51557/experiments/0374_japanese_kame
 TTS=$B/tts/zoom1-tts
 PY=$TTS/.venv/bin/python
@@ -56,10 +62,20 @@ git rev-parse --short HEAD
 nvidia-smi --query-gpu=name --format=csv,noheader
 echo "担当全体 $(find $IN -maxdepth 1 -name '*.txt' | wc -l) 件 / 開始時点の wav $(find $OUT -maxdepth 1 -name '*.wav' | wc -l) 件"
 
+# GPU の使用率を 1 分ごとに記録する。削除の原因の仮説（GPU を確保しているのに使用率が低い）を
+# 確かめる材料。.o ファイルはジョブの終了まで見えないので、別のファイルに書く
+mkdir -p "$B/synth_gpu_log"
+GLOG="$B/synth_gpu_log/${PBS_JOBID%%.*}_shard${SHARD}.csv"
+nvidia-smi --query-gpu=timestamp,utilization.gpu,memory.used --format=csv,noheader -l 60 \
+    > "$GLOG" 2>&1 &
+GPID=$!
+echo "GPU の記録: $GLOG"
+
 cd "$TTS"
 "$PY" "$W" --in_dir "$IN" --out_dir "$OUT" --shard "$SHARD" --nshard "$NSHARD" \
     --max_seconds 41400
 RC=$?
+kill "$GPID" 2>/dev/null
 
 echo "===== 終了 $(date) / 終了コード $RC ====="
 echo "終了時点の wav $(find $OUT -maxdepth 1 -name '*.wav' | wc -l) 件"
