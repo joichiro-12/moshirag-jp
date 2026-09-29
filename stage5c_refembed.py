@@ -55,13 +55,11 @@ def main():
     ap.add_argument("--arc_tokenizer", default="unsloth/Llama-3.2-3B-Instruct")
     ap.add_argument("--pf", type=int, default=-4)
     ap.add_argument("--cache", default="./_arc_cache")
-    ap.add_argument("--device", default="cuda",
-                    help="cuda（本番）か cpu。cpu は工程をつないだ試験用で、autocast を切って fp32 で計算する")
     a = ap.parse_args()
 
     cache = Path(a.cache); cache.mkdir(parents=True, exist_ok=True)
     arc = load_arc_module(cache)
-    dev = a.device
+    dev = "cuda"
     enc = arc.ArcEncoderTransformer(compression_rate=a.pf).to(dev).eval()
     st = load_file(hf_hub_download(a.arc_repo, "model.safetensors"), device="cpu")
     enc.load_state_dict({k[9:]: v for k, v in st.items() if k.startswith("embedder.")}, strict=False)
@@ -97,7 +95,7 @@ def main():
             for e in ev:
                 ids = tok.encode(e["reference"], add_special_tokens=False)
                 t = torch.tensor(ids, device=dev)
-                with torch.autocast("cuda", dtype=torch.bfloat16, enabled=dev.startswith("cuda")):
+                with torch.autocast("cuda", dtype=torch.bfloat16):
                     h, sl = enc.forward_embedder(input_ids=t, seqlens=[t.shape[0]])
                 frames.append(e["ret_frame"]); lens.append(int(sl[0]))
                 embs.append(h.float().cpu().numpy().astype(np.float16))
