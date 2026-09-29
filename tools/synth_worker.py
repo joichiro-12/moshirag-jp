@@ -26,7 +26,7 @@ from __future__ import annotations
 import argparse, hashlib, os, sys, time
 from pathlib import Path
 
-TTS_DIR = Path("/groups/gcg51557/experiments/0374_japanese_kame/tts/zoom1-tts")
+TTS_DIR = Path(os.environ.get("TTS_DIR", "/groups/gcg51557/experiments/0374_japanese_kame/tts/zoom1-tts"))
 sys.path.insert(0, str(TTS_DIR))
 
 
