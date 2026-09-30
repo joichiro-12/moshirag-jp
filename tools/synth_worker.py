@@ -125,6 +125,11 @@ def main():
                     help="起動からこの秒数を過ぎたら新しい会話を始めない（0 で無制限）。"
                          "walltime で合成の途中に殺されると、書きかけの wav が次の回で"
                          "完成品として飛ばされるため、walltime より手前で止める")
+    ap.add_argument("--oom_retries", type=int, default=12,
+                    help="GPU のメモリ不足で失敗したとき、同じ会話をやり直す回数。"
+                         "共用の GPU で他の利用者が後からメモリを取ると、飛ばした会話が次々に"
+                         "失敗扱いになるため（9/29 の g23 で 6 会話）、飛ばさずに待つ")
+    ap.add_argument("--oom_wait", type=float, default=300, help="やり直すまでに待つ秒数")
     a = ap.parse_args()
     t_start = time.time()
 
@@ -224,12 +229,22 @@ def main():
         if out.exists() and out.stat().st_size > 0:
             skip += 1
             continue
-        try:
-            run(f, out)
-            n += 1
-        except Exception as e:  # noqa: BLE001
-            fail += 1
-            print(f"  失敗 {f.stem}: {e}", flush=True)
+        for attempt in range(a.oom_retries + 1):
+            try:
+                run(f, out)
+                n += 1
+                break
+            except Exception as e:  # noqa: BLE001
+                if "out of memory" in str(e).lower() and attempt < a.oom_retries:
+                    import torch
+                    torch.cuda.empty_cache()
+                    print(f"  GPU のメモリ不足 {f.stem}（{attempt + 1} 回目）。"
+                          f"{a.oom_wait:.0f} 秒待ってやり直す", flush=True)
+                    time.sleep(a.oom_wait)
+                    continue
+                fail += 1
+                print(f"  失敗 {f.stem}: {e}", flush=True)
+                break
         if n and n % 10 == 0:
             el = time.time() - t0
             print(f"  {n} 件 / {el:.0f}s（{el/n:.1f} 秒/会話）", flush=True)
