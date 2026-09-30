@@ -23,4 +23,4 @@ awk "{print \$0\".wav\"; print \$0\".manifest.json\"; print \$0\"_turns\"}" /tmp
   | ssh g21 "set -e; mkdir -p $I; tar -xf - -C $I
 n=\$(ls $I | grep -c '\.wav$' || true)
 find $I -mindepth 1 -maxdepth 1 -exec mv -t $R/audio {} + 2>/dev/null || true
-echo \"NAS に移した会話: \$n 件 / 展開用のフォルダ（$I）に残った項目: \$(ls $I | wc -l) 件\"" 2>&1 | grep -v "post-quantum\|store now\|pq.html"
+echo \"NAS に移した会話: \$n 件 / 展開用のフォルダ（${I}）に残った項目: \$(ls $I | wc -l) 件\"" 2>&1 | grep -v "post-quantum\|store now\|pq.html"
