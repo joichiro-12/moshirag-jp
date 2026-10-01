@@ -1,0 +1,21 @@
+#!/bin/bash
+#PBS -P gcg51557
+#PBS -q rt_HF
+#PBS -l select=1
+#PBS -l walltime=1:00:00
+#PBS -N 0374_evalbody2
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || true
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+B=/groups/gcg51557/experiments/0374_japanese_kame
+echo "########## body トークン：学習後（対応のある差の検定つき） ##########"
+uv run --extra data python moshirag/eval_body_tokens.py --stems $B/split_eval.txt --n_conv 200 --n_show 0 \
+  --ckpt $B/ckpt_d3b/model.safetensors --bridge_ckpt $B/ckpt_d3b/bridge.safetensors
+echo "########## <ret> 位置で 1 位のトークン：学習後 ##########"
+uv run --extra data python moshirag/eval_ret_emission.py --stems $B/split_eval.txt --n_conv 200 \
+  --ckpt $B/ckpt_d3b/model.safetensors

@@ -1,0 +1,13 @@
+#!/bin/bash
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=0:30:00
+#PBS -N 0374_b0
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || true
+uv run --extra data python probes/b0_verify.py

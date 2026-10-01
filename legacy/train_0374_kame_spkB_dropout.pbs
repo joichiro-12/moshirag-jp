@@ -1,0 +1,99 @@
+#!/bin/bash
+# =====================================================================
+# J-KAME finetune on ABCI 3.0 — SPEAKER B (answerer) + INPUT DROPOUT.
+#
+# Goal: apply learning pressure so the model actually RELIES ON the oracle
+# instead of ignoring it. During teacher forcing, both the inner monologue
+# (text) AND the semantic audio (cb0) already carry the answer, so the oracle
+# is redundant and the model never learns to use it. We drop those redundant
+# inputs (stochastically) so the oracle becomes a necessary content source,
+# and we keep the oracle mostly present/aligned (lower skip + jitter) so there
+# is something to lean on.
+#
+# This is a BEYOND-KAME extension: the KAME paper uses no such dropout.
+# Baseline to compare against: output/0374_kame-0610-e5-spkB-wandb (B, no dropout).
+#
+# Changes vs train_0374_kame_spkB_wandb.pbs (only the pressure knobs differ):
+#   SEMANTIC_EMB_DROPOUT=0.5   zero semantic audio (cb0) on ~half the samples
+#   TEXT_TOKEN_DROPOUT=0.2     flip ~20% of inner-monologue tokens to pad
+#   ORACLE_SKIP_PROB_MIN/MAX=0.0/0.3   keep the oracle mostly present
+#   ORACLE_MAX_TIME_JITTER_FRAMES=4    KAME-style timing jitter (~0.3s)
+# All are env-overridable to tune in follow-up runs.
+#
+# Submit from the experiment repo dir on a login node:
+#   cd /groups/gcg51557/experiments/0374_japanese_kame/moshi_kame_finetune
+#   qsub legacy/train_0374_kame_spkB_dropout.pbs
+#
+# Smoke first (1 epoch on one small parquet, a few minutes):
+#   qsub -v RTYPE=rt_HF,NUM_EPOCHS=1,\
+# TRAIN_DATA_GLOB=processed_data/japanese_kame/0610/batch_0000-001-of-001.parquet,\
+# OUTPUT_DIR=output/0374_kame-spkB-drop-smoke legacy/train_0374_kame_spkB_dropout.pbs
+#
+# AFTER THE RUN (upload W&B metrics from a host with internet):
+#   .venv/bin/wandb login && .venv/bin/wandb sync wandb/offline-run-*
+# =====================================================================
+#PBS -P gcg51557
+#PBS -q R9920261000
+#PBS -v RTYPE=rt_HF
+#PBS -l select=1
+#PBS -l walltime=04:00:00
+#PBS -N 0374_kame_spkB_drop
+#PBS -j oe
+
+set -euo pipefail
+
+# PBS starts the job in $HOME; move to the dir we submitted from (the repo).
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+
+# --- compute-node environment (see the "ABCI training workflow" memo) ---
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.1                  # CUDA_HOME for DeepSpeed's nvcc (cu121)
+export PATH="$HOME/.local/bin:$PATH"   # uv is not on PATH on compute nodes
+
+# --- W&B: offline logging (no internet on compute nodes); sync later ---
+export WANDB_MODE=offline
+export WANDB_DIR="${WANDB_DIR:-$PWD}"
+
+# --- sanity: confirm we are on a GPU compute node (hnodeXXX), not a login node ---
+echo "host: $(hostname)"
+nvidia-smi -L || { echo "NO GPU visible — are you on a login node?"; exit 1; }
+
+# --- base config (mirrors the spkB wandb run) ---
+export MOSHI_SPEAKERS="${MOSHI_SPEAKERS:-B}"
+export REPORT_TO="${REPORT_TO:-wandb}"
+export PROJECT_NAME="${PROJECT_NAME:-0374_japanese_kame}"
+export TRAIN_DATA_GLOB="${TRAIN_DATA_GLOB:-processed_data/japanese_kame/0610/batch_*.parquet}"
+# MODEL_DIR set explicitly (init model lives under experiment/, not repo root).
+export MODEL_DIR="${MODEL_DIR:-experiment/init_models/j-moshi-ext-four_streams-bfloat16}"
+export OUTPUT_DIR="${OUTPUT_DIR:-output/0374_kame-0610-e5-spkB-drop}"
+export DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-ds_configs/zero3-bfp16-warmlr-act_ckpt.json}"
+export NUM_PROCESSES="${NUM_PROCESSES:-8}"
+export NUM_EPOCHS="${NUM_EPOCHS:-5}"
+export PER_DEVICE_BATCH_SIZE="${PER_DEVICE_BATCH_SIZE:-2}"
+export GRADIENT_ACCUMULATION_STEPS="${GRADIENT_ACCUMULATION_STEPS:-1}"
+export NUM_WARMUP_STEPS="${NUM_WARMUP_STEPS:-100}"
+export LOGGING_STEPS="${LOGGING_STEPS:-10}"
+export SAVE_STEPS="${SAVE_STEPS:-500}"
+export USE_ORACLE="${USE_ORACLE:-1}"
+
+# --- oracle-reliance pressure (the point of this run) ---
+export SEMANTIC_EMB_DROPOUT="${SEMANTIC_EMB_DROPOUT:-0.5}"
+export TEXT_TOKEN_DROPOUT="${TEXT_TOKEN_DROPOUT:-0.2}"
+export TEXT_EMB_DROPOUT="${TEXT_EMB_DROPOUT:-}"          # empty -> off (0.0)
+export ORACLE_SKIP_PROB_MIN="${ORACLE_SKIP_PROB_MIN:-0.0}"
+export ORACLE_SKIP_PROB_MAX="${ORACLE_SKIP_PROB_MAX:-0.3}"
+export ORACLE_MAX_TIME_JITTER_FRAMES="${ORACLE_MAX_TIME_JITTER_FRAMES:-4}"
+
+mkdir -p "${OUTPUT_DIR}"
+
+echo "=== J-KAME finetune | speaker=${MOSHI_SPEAKERS} | report_to=${REPORT_TO} ==="
+echo "data    : ${TRAIN_DATA_GLOB}"
+echo "init    : ${MODEL_DIR}"
+echo "output  : ${OUTPUT_DIR}"
+echo "pressure: semantic_drop=${SEMANTIC_EMB_DROPOUT} text_token_drop=${TEXT_TOKEN_DROPOUT} text_emb_drop=${TEXT_EMB_DROPOUT:-0} skip=${ORACLE_SKIP_PROB_MIN}-${ORACLE_SKIP_PROB_MAX} jitter=${ORACLE_MAX_TIME_JITTER_FRAMES}"
+echo "epochs  : ${NUM_EPOCHS} | per_device_bs=${PER_DEVICE_BATCH_SIZE} x ${NUM_PROCESSES} gpu"
+
+bash examples/finetune_j_moshi.sh
+
+echo "=== done. Upload metrics from a host with internet: ==="
+echo "    .venv/bin/wandb login && .venv/bin/wandb sync ${WANDB_DIR}/wandb/offline-run-*"

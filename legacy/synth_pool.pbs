@@ -1,0 +1,64 @@
+#!/bin/bash
+# 5,000 会話の音声化（動的取得版）。
+#   qsub legacy/synth_pool.pbs     ← 何本投げてもよい。各ジョブが残りから 1 件ずつ取る
+#
+# 静的シャード版（synth_shard.pbs）は (i-1)%NSHARD==SHARD の固定割り当てだったため、
+# 起動しなかったシャードが仕事を抱えたまま残った（8/30 の実測でシャード 7 が 625 件、
+# シャード 5 が 24 件）。ここでは mkdir の原子性で 1 件ずつ排他取得し、
+# 空いたワーカが残りを引き取る形にする。walltime を短くしてもよいので backfill にも乗る。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=6:00:00
+#PBS -N 0374_synthp
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+BASE=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$BASE/tts/zoom1-tts
+P=$BASE/pilot5k_audio
+CLAIM=$BASE/pilot5k_claims
+mkdir -p "$P" "$CLAIM"
+
+echo "===== $(date) $(hostname) job=${PBS_JOBID:-local} ====="
+nvidia-smi --query-gpu=name --format=csv,noheader
+
+# 死んだジョブが残した claim を回収する（1 会話 100 秒程度なので 30 分放置は異常）
+recovered=0
+for c in "$CLAIM"/*; do
+    [ -d "$c" ] || continue
+    stem=$(basename "$c")
+    [ -s "$P/${stem}.wav" ] && continue
+    if [ -z "$(find "$c" -maxdepth 0 -newermt "30 minutes ago" 2>/dev/null)" ]; then
+        rmdir "$c" 2>/dev/null && recovered=$((recovered+1))
+    fi
+done
+echo "台本 $(ls "$BASE"/pilot5k_in/*.txt 2>/dev/null | wc -l) 件 / 既存音声 $(ls "$P"/*.wav 2>/dev/null | wc -l) 件 / 回収した claim $recovered 件"
+
+cd "$TTS"
+S=$(date +%s); n=0; fail=0
+for f in "$BASE"/pilot5k_in/*.txt; do
+    stem=$(basename "$f" .txt)
+    [ -s "$P/${stem}.wav" ] && continue
+    # mkdir は原子的。成功した 1 ジョブだけがこの会話を担当する
+    mkdir "$CLAIM/$stem" 2>/dev/null || continue
+    if uv run zoom1-dialogue-tts "$f" -o "$P/${stem}.wav" \
+        --variant drop --turn-timing stat --backchannels stat --seed 0 --max-turn-ms 45000 \
+        > "$P/${stem}.log" 2>&1; then
+        n=$((n+1))
+    else
+        fail=$((fail+1)); echo "  失敗: $stem"
+        rm -f "$P/${stem}.wav"; rmdir "$CLAIM/$stem" 2>/dev/null
+    fi
+    if [ $(( n % 25 )) -eq 0 ] && [ "$n" -gt 0 ]; then
+        E=$(date +%s); echo "  $n 件 / $((E-S))s（$(awk "BEGIN{printf \"%.1f\", ($E-$S)/$n}") 秒/会話）残り $(( $(ls "$BASE"/pilot5k_in/*.txt | wc -l) - $(ls "$P"/*.wav 2>/dev/null | wc -l) )) 件"
+    fi
+    # walltime の 10 分前で自主的に抜ける（中断された会話を減らす）
+    [ $(( $(date +%s) - S )) -gt 20400 ] && { echo "  walltime 手前で終了"; break; }
+done
+echo "===== $(date) 完了 $n 件 / 失敗 $fail 件 ====="

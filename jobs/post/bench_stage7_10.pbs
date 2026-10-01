@@ -1,0 +1,89 @@
+#!/bin/bash
+# 工程 7〜10（トークナイズ〜parquet 化）の所要時間を測る。
+#
+# ## なぜ必要か
+#
+# 大規模化の日程を引くうえで、この 4 工程の所要をまったく測っていない。
+# 会話生成（341 会話/時）と音声化（36 会話/時）は実測があるが、ここは空白である。
+# 10 月中旬に初めて測って想定外だと打ち手が無いため、先に測る。
+#
+# ## やり方
+#
+# 既存の 4,862 会話（音声・アライメント済み）を使う。1,000 件と 4,000 件の 2 規模で
+# 測り、**所要が件数に比例するか**も見る。比例しなければ外挿できない。
+#
+# 出力はすべて bench/ 以下に書き、本番のデータには触れない。
+# 工程 7・8 は件数を絞る引数が無いので symlink で部分集合を作る。
+#PBS -P gcg51557
+#PBS -q rt_HF
+#PBS -l select=1
+#PBS -l walltime=03:00:00
+#PBS -N 0374_bench710
+#PBS -j oe
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || true
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+
+B=/groups/gcg51557/experiments/0374_japanese_kame
+BE=$B/bench
+rm -rf "$BE"; mkdir -p "$BE"
+
+echo "===== $(date) $(hostname) ====="
+git rev-parse --short HEAD; git status --porcelain | wc -l
+echo "CPU: $(nproc) / GPU: $(nvidia-smi -L 2>/dev/null | wc -l)"
+
+# 対象の会話（音声・アライメントが揃っているもの）
+grep -v '^$' "$B/pilot5k_clean.txt" | head -4000 > "$BE/stems4000.txt"
+head -1000 "$BE/stems4000.txt" > "$BE/stems1000.txt"
+echo "対象: $(wc -l < "$BE/stems1000.txt") 件 と $(wc -l < "$BE/stems4000.txt") 件"
+
+# 工程 7・8 は件数指定ができないので symlink で部分集合を作る
+for N in 1000 4000; do
+  mkdir -p "$BE/audio_$N" "$BE/words_$N"
+  while read -r s; do
+    [ -f "$B/pilot5k_audio/$s.wav" ] && ln -sf "$B/pilot5k_audio/$s.wav" "$BE/audio_$N/"
+    for w in "$B/stage5_words/$s"*; do [ -e "$w" ] && ln -sf "$w" "$BE/words_$N/"; done
+  done < "$BE/stems$N.txt"
+  echo "  N=$N: 音声 $(ls "$BE/audio_$N" | wc -l) / 語 $(ls "$BE/words_$N" | wc -l)"
+done
+
+t() { local lab="$1"; shift; local s=$(date +%s); "$@" > "$BE/${lab}.log" 2>&1; local r=$?; local e=$(date +%s)
+      echo "  ${lab}: $((e-s)) 秒 (exit=$r)"; }
+
+for N in 1000 4000; do
+  echo
+  echo "########## N=$N ##########"
+
+  t "s7_audio_$N" uv run --extra data -m tools.tokenize_audio \
+      --audio_dir "$BE/audio_$N" --output_dir "$BE/tok_audio_$N" --num_workers 8
+
+  t "s8_text_$N" uv run --extra data -m tools.tokenize_text \
+      --word_transcript_dir "$BE/words_$N" --output_dir "$BE/tok_text_$N" \
+      --text_tokenizer_repo llm-jp/j-moshi-v1 \
+      --text_tokenizer_name tokenizer_spm_32k_3.model \
+      --text_padding_id 3 --end_of_text_padding_id 0 \
+      --audio_tokenizer_frame_rate 12.5 --no_whitespace_before_word \
+      --num_workers 32 --allow_alignment_warnings
+
+  t "s9_ref_$N" uv run --extra data python moshirag/stage5c_refembed.py \
+      --ret_dir "$B/pilot5k_ret" --stems "$BE/stems$N.txt" --out "$BE/ref_$N"
+
+  t "s10_prep_$N" uv run --extra data python tools/prepare_dataset_moshirag.py \
+      --tokenized_text_dir "$BE/tok_text_$N" --tokenized_audio_dir "$BE/tok_audio_$N" \
+      --ref_embed_dir "$BE/ref_$N" --ret_dir "$B/pilot5k_ret" \
+      --stems "$BE/stems$N.txt" --ref_dim 3072 \
+      --output_prefix "$BE/stage6_$N/bench"
+done
+
+echo
+echo "===== 終了 $(date) ====="
+echo "--- 出力件数の確認 ---"
+for N in 1000 4000; do
+  echo "  N=$N: tok_audio $(ls "$BE/tok_audio_$N" 2>/dev/null | wc -l) / tok_text $(ls "$BE/tok_text_$N" 2>/dev/null | wc -l) / ref $(ls "$BE/ref_$N" 2>/dev/null | wc -l) / parquet $(ls "$BE/stage6_$N" 2>/dev/null | wc -l)"
+done
+echo "--- 容量 ---"
+du -sh "$BE"/tok_audio_4000 "$BE"/tok_text_4000 "$BE"/ref_4000 "$BE"/stage6_4000 2>/dev/null

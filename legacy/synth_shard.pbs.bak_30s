@@ -1,0 +1,45 @@
+#!/bin/bash
+# 5,000 会話の音声化。SHARD / NSHARD で分割し、複数ジョブで並列に進める。
+#   qsub -v SHARD=0,NSHARD=4 legacy/synth_shard.pbs
+# 既に .wav がある会話は飛ばすので、何度投げても未処理分だけ埋まる。
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=12:00:00
+#PBS -N 0374_synth
+#PBS -j oe
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+export PATH="$HOME/.local/bin:$PATH"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+SHARD="${SHARD:-0}"; NSHARD="${NSHARD:-1}"
+BASE=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$BASE/tts/zoom1-tts
+P=$BASE/pilot5k_audio
+mkdir -p "$P"
+
+echo "===== $(date) $(hostname) shard=$SHARD/$NSHARD ====="
+nvidia-smi --query-gpu=name --format=csv,noheader
+echo "台本 $(ls "$BASE"/pilot5k_in/*.txt 2>/dev/null | wc -l) 件 / 既存音声 $(ls "$P"/*.wav 2>/dev/null | wc -l) 件"
+
+cd "$TTS"
+S=$(date +%s); n=0; skip=0; i=0
+for f in "$BASE"/pilot5k_in/*.txt; do
+    i=$((i+1))
+    [ $(( (i-1) % NSHARD )) -eq "$SHARD" ] || continue
+    stem=$(basename "$f" .txt)
+    [ -s "$P/${stem}.wav" ] && { skip=$((skip+1)); continue; }
+    uv run zoom1-dialogue-tts "$f" -o "$P/${stem}.wav" \
+        --variant drop --turn-timing stat --backchannels stat --seed 0 \
+        > "$P/${stem}.log" 2>&1 && n=$((n+1)) || echo "  失敗: $stem"
+    if [ $(( n % 25 )) -eq 0 ] && [ "$n" -gt 0 ]; then
+        E=$(date +%s); echo "  $n 件 / $((E-S))s（$(awk "BEGIN{printf \"%.1f\", ($E-$S)/$n}") 秒/会話）"
+    fi
+done
+E=$(date +%s)
+echo "===== 完了 $(date) ====="
+echo "合成 $n 件 / スキップ $skip 件 / $((E-S)) 秒"
+echo "全体の進捗: $(ls "$P"/*.wav 2>/dev/null | wc -l) / $(ls "$BASE"/pilot5k_in/*.txt 2>/dev/null | wc -l)"

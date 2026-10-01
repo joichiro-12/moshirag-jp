@@ -1,0 +1,67 @@
+#!/bin/bash
+# Wikipedia の記事から問いと答えの組を作る（パイロット 1,000 件）。
+#
+#   qsub -P gcg51557 jobs/qa_gen/wikiqa_pilot.pbs
+#
+# 狙いは 2 つ。
+#   ① 1 件あたりの生成コストを測る（全件 74 万件に投げる前に総コストを確定させる）
+#   ② 採用率と質を見る（LLM が「題材にならない」と判定する割合）
+#PBS -P gcg51557
+#PBS -q rt_HG
+#PBS -l select=1
+#PBS -l walltime=02:00:00
+#PBS -N 0374_wikiqa_pilot
+#PBS -j oe
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+mkdir -p logs   # vLLM のサーバのログの置き場（git の管理外）
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/13.0 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+export VLLM_USE_FLASHINFER_SAMPLER=0 HF_HUB_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+export VLLM_ENABLE_V1_MULTIPROCESSING=0
+export VLLM_CACHE_ROOT=/tmp/vllm_cache_${USER}_wikiqa
+export TORCHINDUCTOR_CACHE_DIR=/tmp/inductor_${USER}_wikiqa
+export TRITON_CACHE_DIR=/tmp/triton_${USER}_wikiqa
+mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
+
+MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
+VENV=.venv_vllm; PORT=8100; NAME=llm-jp-4-32b-a3b-thinking
+IN=data/japanese_kame/qa_pairs/wiki_candidates.jsonl
+OUT=data/japanese_kame/qa_pairs/wiki_qa_pilot.jsonl
+
+echo "===== $(date) $(hostname) ====="
+git rev-parse --short HEAD; git status --porcelain | wc -l
+
+$VENV/bin/python -m vllm.entrypoints.openai.api_server \
+    --model "$MODEL" --served-model-name "$NAME" \
+    --max-model-len 16384 --gpu-memory-utilization 0.90 --enforce-eager \
+    --port "$PORT" > logs/vllm_server_wikiqa.log 2>&1 &
+VLLM_PID=$!
+trap 'kill "$VLLM_PID" 2>/dev/null || true' EXIT
+
+for i in $(seq 1 150); do
+    curl -s -o /dev/null "http://localhost:${PORT}/v1/models" && { echo "vLLM ready ($((i*10))s)"; break; }
+    kill -0 "$VLLM_PID" 2>/dev/null || { echo "!! vLLM died"; tail -40 logs/vllm_server_wikiqa.log; exit 1; }
+    sleep 10
+done
+
+S=$(date +%s)
+$VENV/bin/python scripts/japanese_kame/01c_generate_wiki_qa.py \
+    --input_file "$IN" --output_file "$OUT" \
+    --num_samples 1000 --seed 1 --workers 32 --effort low \
+    --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
+E=$(date +%s)
+
+N=$(wc -l < "$OUT" 2>/dev/null || echo 0)
+echo "===== 終了 $(date) ====="
+echo "経過 $((E-S)) 秒 / 採用 $N 件"
+[ "$N" -gt 0 ] && echo "1 件あたり $(awk "BEGIN{printf \"%.2f\", ($E-$S)/$N}") 秒（採用ベース）"
+echo "--- 採用された例 ---"
+head -5 "$OUT" 2>/dev/null | python3 -c "
+import json,sys
+for l in sys.stdin:
+    d=json.loads(l)
+    print(f\"  【{d['title']}】{d['question']} → {d['answer']}\")
+"
