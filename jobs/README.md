@@ -10,4 +10,7 @@
 | `post/` | 語アライメント・トークナイズ・リファレンス埋め込み・parquet 化（`stage5*`・`stage6_prep`・`align_test`・`bench_stage7_10`） |
 | `train_eval/` | 学習と評価（`d3`・`d3b`・`d4`・`eval*`・`sweep`） |
 
+**PBS の出力は `logs/<ジョブ番号>.pbs1.OU` に出る**（`#PBS -o logs/`。ジョブ名は入らない）。`logs/` は git の管理外なので、
+新しく clone したときは `mkdir -p logs` しておく。
+
 研究室サーバで回すものは `tools/lab/` にある。ABCI の利用ルール（アレイ禁止など）は LLM-jp の資料に従う。

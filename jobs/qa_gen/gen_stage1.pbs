@@ -13,6 +13,7 @@
 #PBS -l walltime=12:00:00
 #PBS -N 0374_gen_s1
 #PBS -j oe
+#PBS -o logs/
 
 set -u
 cd "${PBS_O_WORKDIR:-$(pwd)}"

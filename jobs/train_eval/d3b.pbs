@@ -5,6 +5,7 @@
 #PBS -l walltime=4:00:00
 #PBS -N 0374_d3b
 #PBS -j oe
+#PBS -o logs/
 set -u
 cd "${PBS_O_WORKDIR:-$(pwd)}"
 export PATH="$HOME/.local/bin:$PATH"
