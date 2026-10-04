@@ -59,7 +59,7 @@ B=/groups/gcg51557/experiments/0374_japanese_kame
 TTS=$B/tts/zoom1-tts
 PY=$TTS/.venv/bin/python
 W=$PWD/moshirag_data/s04_synth.py
-IN=$B/synth_abci_in
+IN=${IN:-$B/synth_abci_in}   # 10/4 から -v IN=$B/synth_abci_in2（ABCI に割り当てた 21,000 件。$B/synth_split_1004/abci.txt）
 OUT=$B/wiki_audio
 mkdir -p "$OUT"
 
