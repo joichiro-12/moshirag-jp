@@ -2,7 +2,7 @@
 
 ## なぜ必要か
 
-会話生成器（02e）は入力の `question` と `answer` しか使わない。参照文はそこから
+会話生成器（s02）は入力の `question` と `answer` しか使わない。参照文はそこから
 LLM が作る（D-1）。したがって**正解段落つきの QA データセットである必要がなく**、
 問いと答えの組さえあればよい。
 
@@ -14,9 +14,9 @@ Wikipedia から作って補う。
 **記事の適否判定と QA 生成を 1 回の呼び出しにまとめる。** 2 段に分けると呼び出し数が
 倍になる。題材にならない記事には「スキップ」と答えさせる。
 
-入力は `01b_build_wiki_candidates.py` の出力（本文冒頭つき）。
+入力は `s01b_wiki_candidates.py` の出力（本文冒頭つき）。
 出力は `jaquad.jsonl` と同じ形（`question` / `answer` / `source`）に、
-追跡用の記事情報を足したもの。そのまま 02e の `--input_file` に渡せる。
+追跡用の記事情報を足したもの。そのまま s02 の `--input_file` に渡せる。
 
 ## 作る問いの条件
 
@@ -32,8 +32,8 @@ from pathlib import Path
 
 from openai import OpenAI
 
-# API の呼び出しと思考混入の検出は 02e の実装をそのまま使う。
-# reasoning_effort の渡し方はサーバ実装に依存し、02e は 3 通り試して当たったものを
+# API の呼び出しと思考混入の検出は s02（旧 02e）の実装をそのまま使う。
+# reasoning_effort の渡し方はサーバ実装に依存し、s02 は 3 通り試して当たったものを
 # 覚える作りになっている。複製すると片方だけ直す事故が起きるので import する。
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
 _v5 = __import__("s02_dialogue")
@@ -153,7 +153,7 @@ def parse(out: str) -> tuple[str, str] | None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input_file", required=True, help="01b の出力")
+    ap.add_argument("--input_file", required=True, help="s01b の出力")
     ap.add_argument("--output_file", required=True)
     ap.add_argument("--num_samples", type=int, default=0, help="0 で全件")
     ap.add_argument("--seed", type=int, default=1)
@@ -172,7 +172,7 @@ def main():
                     base_url=a.llm_base_url or None)
 
     rows = [json.loads(l) for l in open(a.input_file, encoding="utf-8") if l.strip()]
-    # 02e と同じ方針：乱数種のみでシャッフルし前方を切る。件数を増やしても既存分が活きる
+    # s02 と同じ方針：乱数種のみでシャッフルし前方を切る。件数を増やしても既存分が活きる
     random.Random(a.seed).shuffle(rows)
     if a.num_samples:
         rows = rows[: a.num_samples]

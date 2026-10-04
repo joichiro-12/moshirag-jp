@@ -6,8 +6,8 @@ writes them to data/japanese_kame/qa_pairs/ as JSONL files.
 Each line: {"question": "...", "answer": "...", "source": "...", "category": "..."}
 
 Usage:
-    uv run --extra data -m scripts.japanese_kame.01_build_qa_dataset \
-        --output_dir data/japanese_kame/qa_pairs
+    uv run --extra data python moshirag_data/s01a_jaquad_qa.py \
+        --output_dir data/japanese_kame/qa_pairs --sources jaquad
 """
 
 from __future__ import annotations

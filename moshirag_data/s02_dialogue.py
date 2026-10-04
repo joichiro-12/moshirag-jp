@@ -1,5 +1,8 @@
 """Generate MoshiRAG-style Japanese conversation scripts (v2, two-axis design).
 
+（2026-10-04 追記）このファイルは旧 scripts/japanese_kame/02e_generate_moshirag_v5.py（v5）である。
+以下の説明は v2 のときに書かれたもの。v3〜v5 で変わった点は、旧パス 02c〜02e の git の履歴を参照。
+
 Replaces 02b_generate_moshirag_scripts.py. The v1 design generated the record
 line-by-line with the reference produced *inside* the turn loop; that made every call
 carry the whole task description and produced conversations that did not hold together
@@ -27,10 +30,15 @@ implementation). It is NOT a character name -- nothing may address the assistant
 name, since "Moshi" is the model, not a persona.
 
 Usage:
-    uv run python scripts/japanese_kame/02c_generate_moshirag_v2.py \
-        --input_file data/japanese_kame/qa_pairs/jaquad.jsonl \
-        --output_dir data/moshirag_jp/v2_pilot \
-        --num_samples 20 --workers 8
+    （本番の呼び出しは jobs/qa_gen/gen_wiki_main.pbs。vLLM のサーバを立ててから呼ぶ）
+    $VENV/bin/python moshirag_data/s02_dialogue.py \
+        --input_file data/japanese_kame/qa_pairs/wiki_qa.jsonl \
+        --output_dir data/moshirag_jp/wiki_main --num_samples "$NUM" --seed 1 \
+        --shard "$SHARD" --nshard "$NSHARD" \
+        --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" \
+        --min_turns 3 --max_turns 5 --workers 32 \
+        --effort_human high --effort_assistant low --effort_chunk low \
+        --effort_judge low --effort_lead low --resume
 """
 
 from __future__ import annotations

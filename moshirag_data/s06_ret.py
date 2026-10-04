@@ -18,7 +18,7 @@ lead / body を別ターンとして合成すれば境界が誤差なく求ま�
 
 入力
   --manifest_dir  合成（+ 後段処理）の *.manifest.json
-  --struct_dir    07_prepare_tts_inputs.py の *.struct.json
+  --struct_dir    s03（s03_tts_input.py）の *.struct.json
 
 出力
   {"stem", "frame_rate", "ret_events": [...]}
