@@ -16,7 +16,13 @@ R=/mnt/iot-qnap5/jsato/moshirag_tts
 F=/home/jsato/moshirag_tts_relay_finish.py   # g21 の上の確認スクリプト（tools/lab/relay_finish.py の写し）
 Q='grep -v "post-quantum\|store now\|pq.html"'
 
-have=$(ssh g21 "ls $R/audio | grep '^wiki_qa_0.*\.wav$' | sed 's/\.wav$//'" 2>/dev/null)
+# NAS の audio/ にある会話の一覧。末尾の印が届かなければ（接続が途中で切れたら）何も送らずに止める。
+# 10/4 は一覧の取得がタイムアウトして空になり、g23 の全会話を送り直そうとした（複製として退避されたので audio/ は無事）
+have=$(ssh g21 "ls $R/audio | grep '^wiki_qa_0.*\.wav$' | sed 's/\.wav$//'; echo __END__" 2>/dev/null)
+if [ "$(echo "$have" | tail -1)" != "__END__" ]; then
+    echo "NAS の audio/ の一覧を最後まで取れなかった（接続が切れた可能性）。何も送らずに止める"; exit 1
+fi
+have=$(echo "$have" | sed '$d')
 todo=$(echo "$have" | ssh g23 'cat > /tmp/relay_have.txt
 cd $HOME/moshirag_tts/audio
 find . -maxdepth 1 -name "wiki_qa_*.wav" -mmin +10 -printf "%f\n" | sed "s/\.wav$//" | LC_ALL=C sort \
