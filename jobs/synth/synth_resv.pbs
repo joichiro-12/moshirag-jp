@@ -1,0 +1,59 @@
+#!/bin/bash
+# 音声化（s04）を LLM-jp の予約ノード 1 台（H200 × 8）で回す。1 GPU に 1 本、計 8 本。
+#
+#   qsub -v RTYPE=rt_HF,IN=$B/synth_abci_in2 jobs/synth/synth_resv.pbs
+#
+# 予約ノードの決まり（「ABCI 3.0 の使い方 @LLM-jp」p.19〜28）：キューは R9920261000、
+# -v RTYPE=rt_HF、ジョブ名は実験番号 4 桁から始める、アレイジョブは使わない。
+# -v は qsub の引数で RTYPE と IN をまとめて渡す（PBS ディレクティブの -v と併用しない）。
+#
+# 8 本は IN の台本を --shard 0..7 --nshard 8 で固定に割る（同じ GPU が 8 基なので、そろって終わる）。
+# 既に wav がある会話は飛ばすので、同じコマンドで投げ直せば続きから進む。
+# walltime の手前（23.5 時間）で新しい会話を始めずに止まる（書きかけの wav を残さないため）。
+#PBS -P gcg51557
+#PBS -q R9920261000
+#PBS -l select=1
+#PBS -l walltime=24:00:00
+#PBS -N 0374_synth_resv
+#PBS -j oe
+#PBS -o logs/
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/12.6 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+# 外部に出ない設定
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+export HTTP_PROXY=http://127.0.0.1:9 HTTPS_PROXY=http://127.0.0.1:9
+export http_proxy=$HTTP_PROXY https_proxy=$HTTPS_PROXY
+export NO_PROXY="" no_proxy=""
+export AUDIT_NET=1
+
+B=/groups/gcg51557/experiments/0374_japanese_kame
+TTS=$B/tts/zoom1-tts
+PY=$TTS/.venv/bin/python
+W=$PWD/moshirag_data/s04_synth.py
+IN=${IN:-$B/synth_abci_in2}
+OUT=$B/wiki_audio
+L=$PWD/logs/synth_resv_${PBS_JOBID%%.*}
+mkdir -p "$OUT" "$L"
+
+echo "===== $(date) $(hostname) RTYPE=${RTYPE:-?} ====="
+git rev-parse --short HEAD
+nvidia-smi --query-gpu=index,name --format=csv,noheader
+echo "担当 $(find $IN -maxdepth 1 -name '*.txt' | wc -l) 件 / 開始時点の wav $(find $OUT -maxdepth 1 -name '*.wav' | wc -l) 件"
+
+cd "$TTS"
+for g in 0 1 2 3 4 5 6 7; do
+    # 8 本が同時にモデルを組み立てると、リンクの作り直しで競合する（s04 の with_retry が吸収するが、ずらしておく）
+    CUDA_VISIBLE_DEVICES=$g "$PY" "$W" --in_dir "$IN" --out_dir "$OUT" --shard $g --nshard 8 \
+        --max_seconds 84600 > "$L/shard$g.log" 2>&1 &
+    sleep 20
+done
+wait
+
+echo "===== 終了 $(date) ====="
+for g in 0 1 2 3 4 5 6 7; do echo "  shard $g: $(grep -E "合成 [0-9]+ /|外部接続の試み" $L/shard$g.log | tr "\n" " ")"; done
+echo "終了時点の wav $(find $OUT -maxdepth 1 -name '*.wav' | wc -l) 件"
