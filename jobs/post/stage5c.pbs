@@ -14,5 +14,5 @@ module load cuda/12.6 2>/dev/null || true
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 B=/groups/gcg51557/experiments/0374_japanese_kame
-uv run --extra data python moshirag/stage5c_refembed.py \
+uv run --extra data python moshirag_data/s09_ref_embed.py \
   --ret_dir $B/pilot5k_ret --stems $B/pilot5k_clean.txt --out $B/stage5_ref_embed

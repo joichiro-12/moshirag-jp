@@ -18,7 +18,7 @@
 #
 #   ① 外部に出ない設定（HF_HUB_OFFLINE と、繋がらない代理サーバ）。8 月は設定漏れで
 #      huggingface.co への接続を試みていた。AUDIT_NET=1 で接続の試みをログに残す
-#   ② 会話ごとに uv run を起動せず、モデルを 1 回だけ読む worker 方式（tools/synth_worker.py）。
+#   ② 会話ごとに uv run を起動せず、モデルを 1 回だけ読む worker 方式（moshirag_data/s04_synth.py）。
 #      モデルを使い回しても出力が変わらないことは synth_verify.pbs で確認済み
 #   ③ 起動から 11.5 時間を過ぎたら新しい会話を始めない。walltime で合成の途中に殺されると、
 #      書きかけの wav が次の回で完成品として飛ばされるため
@@ -58,7 +58,7 @@ NSHARD="${NSHARD:-6}"
 B=/groups/gcg51557/experiments/0374_japanese_kame
 TTS=$B/tts/zoom1-tts
 PY=$TTS/.venv/bin/python
-W=$PWD/tools/synth_worker.py
+W=$PWD/moshirag_data/s04_synth.py
 IN=$B/synth_abci_in
 OUT=$B/wiki_audio
 mkdir -p "$OUT"

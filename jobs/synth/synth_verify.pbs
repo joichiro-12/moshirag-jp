@@ -30,7 +30,7 @@ export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
 
 B=/groups/gcg51557/experiments/0374_japanese_kame
 TTS=$B/tts/zoom1-tts
-W=$PWD/tools/synth_worker.py
+W=$PWD/moshirag_data/s04_synth.py
 
 echo "===== $(date) $(hostname) ====="
 git rev-parse --short HEAD; git status --porcelain | grep -v '^??' | wc -l

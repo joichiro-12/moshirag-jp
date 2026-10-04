@@ -48,7 +48,7 @@ IN_DIR="${IN_DIR:-$B/pilot5k_in}"
 OUT_DIR="${OUT_DIR:-$B/pilot5k_audio}"
 TTS=$B/tts/zoom1-tts
 PY=$TTS/.venv/bin/python
-W=$PWD/tools/synth_worker.py
+W=$PWD/moshirag_data/s04_synth.py
 LOGD=$PWD/logs/synth_node_${PBS_JOBID:-local}
 mkdir -p "$LOGD"
 

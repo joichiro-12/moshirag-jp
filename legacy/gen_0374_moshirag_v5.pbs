@@ -2,7 +2,7 @@
 # MoshiRAG-JP conversation script generation (smoke test).
 #   qsub legacy/gen_0374_moshirag.pbs
 # Serves llm-jp-4-32b-a3b-thinking on one H200 (rt_HG) and runs
-# scripts/japanese_kame/02e_generate_moshirag_v5.py against it.
+# moshirag_data/s02_dialogue.py against it.
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
@@ -87,7 +87,7 @@ curl -s "http://localhost:${PORT}/v1/chat/completions" \
     | head -c 1500; echo
 
 echo "===== generate (20 conversations) ====="
-time $VENV/bin/python scripts/japanese_kame/02e_generate_moshirag_v5.py \
+time $VENV/bin/python moshirag_data/s02_dialogue.py \
     --input_file data/japanese_kame/qa_pairs/jaquad.jsonl \
     --output_dir "$OUT" \
     --num_samples 20 \
