@@ -58,7 +58,7 @@ for i in $(seq 1 150); do
 done
 
 S=$(date +%s)
-$VENV/bin/python scripts/japanese_kame/01c_generate_wiki_qa.py \
+$VENV/bin/python moshirag_data/s01c_wiki_qa.py \
     --input_file "$IN" --output_file "$OUT" \
     --num_samples $TOTAL --seed 1 --shard "$SHARD" --nshard "$NSHARD" \
     --workers 32 --effort low --role default \

@@ -33,7 +33,7 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; PORT=8102; NAME=llm-jp-4-32b-a3b-thinking
-SCRIPT=scripts/japanese_kame/02e_generate_moshirag_v5.py
+SCRIPT=moshirag_data/s02_dialogue.py
 IN=data/japanese_kame/qa_pairs/wiki_qa_pilot.jsonl
 OUT=data/moshirag_jp/wiki_pilot
 

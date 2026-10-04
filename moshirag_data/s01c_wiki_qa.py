@@ -36,7 +36,7 @@ from openai import OpenAI
 # reasoning_effort の渡し方はサーバ実装に依存し、02e は 3 通り試して当たったものを
 # 覚える作りになっている。複製すると片方だけ直す事故が起きるので import する。
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__))))
-_v5 = __import__("02e_generate_moshirag_v5")
+_v5 = __import__("s02_dialogue")
 call = _v5.call
 
 QA_ROLE = """\

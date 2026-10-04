@@ -28,7 +28,7 @@ MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-th
 VENV=.venv_vllm
 PORT=8000
 NAME=llm-jp-4-32b-a3b-thinking
-SCRIPT=scripts/japanese_kame/02e_generate_moshirag_v5.py
+SCRIPT=moshirag_data/s02_dialogue.py
 
 echo "===== env ====="; date; hostname
 nvidia-smi --query-gpu=name,memory.total --format=csv,noheader

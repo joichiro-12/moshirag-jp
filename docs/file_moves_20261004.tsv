@@ -1,0 +1,13 @@
+# 2026-10-04 の整理（ブランチ pipeline-reorg）で moshirag_data/ に移したファイル（旧パス<TAB>新パス）。
+# 記録（docs/・研究ノート）は旧パスのまま書かれているので、名前はこの表で引く。
+scripts/japanese_kame/01_build_qa_dataset.py	moshirag_data/s01a_jaquad_qa.py
+scripts/japanese_kame/01b_build_wiki_candidates.py	moshirag_data/s01b_wiki_candidates.py
+scripts/japanese_kame/01c_generate_wiki_qa.py	moshirag_data/s01c_wiki_qa.py
+scripts/japanese_kame/02e_generate_moshirag_v5.py	moshirag_data/s02_dialogue.py
+scripts/japanese_kame/rebuild_references.py	moshirag_data/s02b_rebuild_references.py
+scripts/japanese_kame/07_prepare_tts_inputs.py	moshirag_data/s03_tts_input.py
+tools/synth_worker.py	moshirag_data/s04_synth.py
+tools/mfa_align.py	moshirag_data/s05_align.py
+scripts/japanese_kame/08_place_ret_token.py	moshirag_data/s06_ret.py
+moshirag/stage5c_refembed.py	moshirag_data/s09_ref_embed.py
+tools/prepare_dataset_moshirag.py	moshirag_data/s10_pack.py
