@@ -1,3 +1,9 @@
+> **このリポジトリについて**：KAME の学習コードを土台に、**日本語の MoshiRAG**（検索を組み込んだ全二重の音声対話モデル）を
+> 作るための作業リポジトリである（LLM-jp 対話グループ、実験番号 0374）。
+> 学習データを作る工程は [`moshirag_data/`](moshirag_data/README.md)、学習と評価は `moshirag/`、ABCI に投げる PBS は `jobs/`、
+> 研究室サーバ用のスクリプトは `tools/lab/` にある。MoshiRAG とは何か・用語・工程の流れは `moshirag_data/README.md` を参照。
+> 以下は土台にした KAME の README である。
+
 <h1 align="center">Kame Finetuning Workflow</h1>
 
 <p align="center">

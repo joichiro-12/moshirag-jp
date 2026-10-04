@@ -1,84 +1,88 @@
-# moshirag_data/：日本語 MoshiRAG の学習データを作る工程
+# moshirag_data/：日本語 MoshiRAG の学習データを作るスクリプト
 
-## この文書は何か
+## このリポジトリと、このフォルダの役割
 
-日本語 MoshiRAG の学習データ（parquet）を作る工程を、**1 つの番号体系（s01〜s10）で 1 か所にまとめた**ものの案内。
-各工程のファイル・入出力・実行環境・投げ方と、各工程がいま「同じ約束」をどこまで守っているかを示す。
+このリポジトリは、**日本語の MoshiRAG を作るための作業リポジトリ**である（LLM-jp 対話グループ、実験番号 0374）。
+音声対話モデル KAME の学習コードを土台にしているので、ルートの README・`finetune.py`・`kame_jp/` などは KAME のものである。
 
-## 前提
+**MoshiRAG**（Chien ら, arXiv:2604.12928）は、全二重の音声対話モデル Moshi に検索を組み込んだ構成である。
+モデルは、知識が要る質問を受けると、まず「えーと、〇〇ですね」のような前置き（lead）を話し始める。
+同時に特別なトークン `<ret>` を出して検索を起動し、検索で得た文書（参照）を、圧縮したベクトルとして受け取る。
+前置きを話しているあいだに参照が届くので、そのあとの本題（body）を参照に基づいて答えられる。
 
-- 2026-10-04 の整理（ブランチ `pipeline-reorg`）で、`scripts/japanese_kame/`・`tools/`・`moshirag/` に散っていた
-  スクリプトをここへ移した。**処理の中身は変えていない**（変えたのは s01c が s02 を import する 1 行だけ）。
-  旧パス → 新パスは `docs/file_moves_20261004.tsv`
-- s07・s08 の実装は `tools/` に残っている（KAME から引き継ぎ、KAME 側のテストと README からも使われているため）。
-  ここにあるのは、引数をそのまま渡す入口だけである
-- PBS はリポジトリのルートで `qsub jobs/…/x.pbs` と投げる。`$B` は `/groups/gcg51557/experiments/0374_japanese_kame`
-- 工程ごとに Python の環境が違うので、全工程をまとめて呼ぶ入口は作っていない
+このフォルダは、その学習に要るデータを作る。1 件のデータは、次の 3 つがそろった 2 話者の会話である。
 
-## 現在の状態
+- 会話の音声（左が利用者役、右が Moshi 役のステレオ）
+- どの時刻に `<ret>` を出すか
+- そのとき読む参照の文
 
-ファイルの置き場所と番号をそろえた段階。各工程の約束（下の「約束の守り方」）は**まだそろえていない**。
+これを、問いと答えの組（QA）から 10 の工程（s01〜s10）を経て作る。
 
----
+## 用語
 
-## 工程のつながり
-
-| 工程 | 使う出力 |
+| 用語 | 意味 |
 | --- | --- |
-| s02 会話 | s01（QA） |
-| s03 台本・構造 JSON | s02 |
-| s04 音声 | s03 の台本 |
-| s05 語の時刻 | s04 の manifest とターンの wav |
-| s06 `<ret>` の位置 | s03 の構造 JSON と s04 の manifest |
-| s07 音声トークン | s04 の会話の wav |
-| s08 テキストトークン | s05 |
-| s09 参照の埋め込み | s06 |
-| s10 parquet | s06・s07・s08・s09 |
+| 会話 | 利用者役と Moshi 役の 1 回の対話（10〜14 ターン、約 1 分半）。データの単位で、`wiki_qa_012345` のような ID を持つ |
+| lead / body / tail | 検索が要る応答の 3 つの部分。前置き・本題・締め（tail は空のことが多い） |
+| `<ret>` | 検索を起動する特別なトークン。lead の最初のテキストトークンの直前に置く |
+| 参照 | 検索で得たという想定の文書。学習データでは LLM が QA から作る |
+| augmented / unaugmented | 参照を使って答えるターン／使わないターン |
+| 台本 | TTS に渡す、話者つきの発話の並び（`[S1]…` `[S2]…`） |
+| manifest | 音声化の結果。各ターンが何秒から何秒までかを記録した JSON |
+| 語アライメント | 音声のどこでどの語が話されたかを求めること（MFA を使う） |
+
+## 1 つの会話がどう変わっていくか
+
+```
+s01  QA            {"question": "日本の実業家で、ウェザーニューズを創業した人は誰ですか", "answer": "石橋博良"}
+s02  会話の記録     QA から参照の文 3 本と会話を作り、各ターンが参照を使うか（augmented か）を判定し、lead を書く
+s03  台本           会話の記録を TTS の台本と構造 JSON（lead・body の位置と参照の文）に分ける
+s04  音声           台本を 2 話者のステレオ音声にする（ターンごとの音声と manifest も残る）
+s05  語の時刻       ターンごとの音声で語アライメントをして、会話全体の時間軸に並べる
+s06  <ret> の位置   manifest と構造 JSON から、<ret> を置くフレームと lead の長さを求める
+s07  音声トークン    会話の音声を Mimi で離散トークンにする（12.5 Hz、8 コードブック）
+s08  テキストトークン 語の時刻から、12.5 Hz のテキストの並びを作る
+s09  参照のベクトル  参照の文を ARC-Encoder で符号化する
+s10  parquet        s06〜s09 をまとめて学習用の parquet にする
+```
 
 ## 工程の一覧
 
-| 工程 | ファイル | 何をするか | 入力 → 出力 | 環境 | 投げ方 |
+| 工程 | ファイル | 使う出力 | 出力 | Python の環境 | 投げ方 |
 | --- | --- | --- | --- | --- | --- |
-| s01a | `s01a_jaquad_qa.py` | 既存の QA データセットを 1 行 1 問にそろえる（`--sources jaquad` で JaQuAD だけを取る。MoshiRAG で使うのは JaQuAD だけ） | Hugging Face → `data/japanese_kame/qa_pairs/*.jsonl` | uv（`--extra data`） | 手で実行 |
-| s01b | `s01b_wiki_candidates.py` | 日本語 Wikipedia から、題材にできる記事を機械的に絞る（本文 500 字以上・タイトル） | ja_wiki（パスは固定）→ `wiki_candidates.jsonl` | 標準ライブラリだけ | 手で実行 |
-| s01c | `s01c_wiki_qa.py` | 記事の冒頭から LLM で問いと答えを 1 組作る | `wiki_candidates.jsonl` → `wiki_qa.sNNNofNNN.jsonl` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/wikiqa_main.pbs` |
-| s02 | `s02_dialogue.py` | 問いと答えから会話を作る（lead / body / tail、参照、判定役による検索の要否） | QA の jsonl → `data/moshirag_jp/<名前>/<会話>.{json,txt}` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/gen_wiki_main.pbs`・`gen_stage1.pbs` |
-| s02b | `s02b_rebuild_references.py` | 判定結果の読み取りの不具合（複数の資料の 2 本目以降が捨てられた）を、LLM を呼ばずに直す | s02 の出力 → 別のフォルダ（例：`pilot5k_fixed`） | 標準ライブラリだけ | 手で実行（JaQuAD 分に 1 回適用済み） |
-| s03 | `s03_tts_input.py` | 会話を TTS の台本と構造 JSON に変える | s02 の出力 → `$B/<名前>_in/<会話>.{txt,json,struct.json}` | 標準ライブラリだけ | 手で実行 |
-| s04 | `s04_synth.py` | 台本を 2 話者の音声にする（モデルを 1 回だけ読み、担当分をまとめて合成） | s03 の `.txt` → `<会話>.wav`・`.manifest.json`・`_turns/` | TTS の venv（zoom1-tts） | ABCI：`jobs/synth/synth_hg.pbs`／研究室：`tools/lab/launch.sh` |
-| s05 | `s05_align.py` | ターンごとに MFA で語の時刻を出し、会話単位の語 JSON にまとめる | s04 の manifest とターンの wav → `words/<会話>.json` | MFA の conda 環境 | 研究室：`tools/lab/batch_align.sh`／ABCI：`jobs/post/align_test.pbs`（試験用） |
-| s06 | `s06_ret.py` | `<ret>` を置くフレームと lead の長さを、合成の manifest から求める | s04 の manifest＋s03 の構造 JSON → `<会話>.json` | 標準ライブラリだけ | 手で実行 |
-| s07 | `s07_tok_audio.py` | 会話の wav を Mimi のトークンにする | s04 の wav → `<会話>.npz` | uv（`--extra data`）＋GPU | ABCI：`jobs/post/stage5a_audio.pbs`／研究室：`tools/lab/batch_tokenize.sh` |
-| s08 | `s08_tok_text.py` | 語 JSON を 12.5 Hz のテキストストリームにする | s05 の出力 → `<会話>.npz` | uv（`--extra data`） | `jobs/post/stage5b_text.pbs` |
-| s09 | `s09_ref_embed.py` | `<ret>` ごとの参照文を ARC-Encoder で符号化する | s06 の出力 → `<会話>.npz` | uv（`--extra data`）＋GPU（約 14 GB） | `jobs/post/stage5c.pbs` |
-| s10 | `s10_pack.py` | s06〜s09 をまとめて学習用の parquet にする | s06〜s09 → `*.parquet`（分割） | uv（`--extra data`） | `jobs/post/stage6_prep.pbs` |
+| s01a | `s01a_jaquad_qa.py` | （Hugging Face の JaQuAD） | `data/japanese_kame/qa_pairs/jaquad.jsonl` | uv（`--extra data`） | 手で実行（`--sources jaquad`） |
+| s01b | `s01b_wiki_candidates.py` | （日本語 Wikipedia。パスは固定） | `wiki_candidates.jsonl` | 標準ライブラリだけ | 手で実行 |
+| s01c | `s01c_wiki_qa.py` | s01b | `wiki_qa.sNNNofNNN.jsonl` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/wikiqa_main.pbs` |
+| s02 | `s02_dialogue.py` | s01 | `data/moshirag_jp/<名前>/<会話>.{json,txt}` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/gen_wiki_main.pbs` |
+| s02b | `s02b_rebuild_references.py` | s02 | 別のフォルダ（例：`pilot5k_fixed`） | 標準ライブラリだけ | 手で実行。旧版の不具合の修正用（JaQuAD 分に 1 回適用済み） |
+| s03 | `s03_tts_input.py` | s02 | `<会話>.{txt,json,struct.json}` | 標準ライブラリだけ | 手で実行 |
+| s04 | `s04_synth.py` | s03 の台本 | `<会話>.wav`・`.manifest.json`・`_turns/` | TTS（zoom1-tts）の venv | ABCI：`jobs/synth/synth_resv.pbs`／研究室：`tools/lab/launch_pool.sh` |
+| s05 | `s05_align.py` | s04 | `words/<会話>.json` | MFA の conda 環境 | 研究室：`tools/lab/batch_align.sh` |
+| s06 | `s06_ret.py` | s03 の構造 JSON・s04 の manifest | `<会話>.json` | 標準ライブラリだけ | 手で実行 |
+| s07 | `s07_tok_audio.py` | s04 の会話の音声 | `<会話>.npz` | uv＋GPU | `jobs/post/stage5a_audio.pbs`／研究室：`tools/lab/batch_tokenize.sh` |
+| s08 | `s08_tok_text.py` | s05 | `<会話>.npz` | uv | `jobs/post/stage5b_text.pbs` |
+| s09 | `s09_ref_embed.py` | s06 | `<会話>.npz` | uv＋GPU（約 14 GB） | `jobs/post/stage5c.pbs` |
+| s10 | `s10_pack.py` | s06〜s09 | `*.parquet`（分割） | uv | `jobs/post/stage6_prep.pbs` |
 
-研究室サーバには、s04 を `~/moshirag_tts/synth_worker.py`、s05 を `~/moshirag_mfa/mfa_align.py` という名前で写してある
-（`tools/lab/` の起動スクリプトはこの名前で呼ぶ）。
+- s07・s08 の実装は `tools/tokenize_audio.py`・`tools/tokenize_text.py` にある（KAME と共有しているため）。ここにあるのは入口だけ
+- 工程ごとに Python の環境が違うので、全工程をまとめて呼ぶ入口は作っていない
+- PBS はリポジトリのルートで `qsub jobs/…/x.pbs` と投げる。出力は `logs/<ジョブ番号>.pbs1.OU` に出る
+- 研究室サーバには s04 を `~/moshirag_tts/synth_worker.py`、s05 を `~/moshirag_mfa/mfa_align.py` という名前で写してある
 
-## 約束の守り方（2026-10-04 時点）
+## もう一度流したときの振る舞い（2026-10-04 時点）
 
-目標とする約束は次の 4 つ。**表はいまの実装をそのまま読んだ結果で、そろえる作業はまだしていない。**
+会話は何万件もあり、何日にも分けて作る。そのため、途中で止まっても続きから流せることと、
+どのコードで作ったかを後からたどれることが要る。いまの実装がどうなっているかを表にした。**そろえるのはこれからである。**
 
-1. 入力フォルダと出力フォルダを引数で受け取る
-2. 会話 1 件ごとに出力する
-3. 出力済みの会話は飛ばす（何度流してもよい）
-4. 使ったコードのコミットと設定を記録する
-
-| 工程 | 2. 会話ごとの出力 | 3. 出力済みを飛ばす | 4. コミットの記録 |
+| 工程 | 出力の単位 | もう一度流したとき | どのコードで作ったかの記録 |
 | --- | --- | --- | --- |
-| s01a | ×（データセットごとの jsonl） | ×（毎回作り直す） | × |
-| s01b | ×（1 本の jsonl） | ×（毎回作り直す） | × |
-| s01c | ×（シャードごとの jsonl に追記） | ○（出力済みの記事 ID を飛ばす） | PBS の出力にだけ残る |
-| s02 | ○ | ○（`--resume`） | ○（各会話の JSON に `code_commit`） |
-| s02b | ○ | ×（毎回作り直す） | × |
-| s03 | ○ | ×（毎回作り直す） | s02 のコミットを写すだけ |
-| s04 | ○ | ○（wav があれば飛ばす） | ABCI の PBS の出力にだけ残る |
-| s05 | ○ | 本体は×。`batch_align.sh` が語 JSON の無い会話だけを渡す | ABCI の PBS の出力にだけ残る |
-| s06 | ○ | ×（毎回作り直す） | s02 のコミットを写すだけ |
-| s07 | ○ | ○（`--resume`） | × |
-| s08 | ○ | ○（`--resume`） | × |
-| s09 | ○ | ○（npz があれば飛ばす） | × |
-| s10 | ×（parquet の分割） | ×（毎回作り直す） | × |
+| s01a・s01b | 1 本の jsonl | 全部作り直す | 無い |
+| s01c | シャードごとの jsonl に追記 | 出力済みの記事は飛ばす | PBS の出力にだけ残る |
+| s02 | 会話ごと | `--resume` で出力済みを飛ばす | 各会話の JSON に `code_commit` |
+| s02b・s03・s06 | 会話ごと | 全部作り直す | s02 の `code_commit` を写すだけ |
+| s04 | 会話ごと | 音声がある会話は飛ばす | ABCI の PBS の出力にだけ残る |
+| s05 | 会話ごと | 本体は全部作り直す。`batch_align.sh` が語の時刻の無い会話だけを渡す | ABCI の PBS の出力にだけ残る |
+| s07・s08・s09 | 会話ごと | 出力済みを飛ばす（s07・s08 は `--resume`） | 無い |
+| s10 | parquet の分割 | 全部作り直す | 無い |
 
-1. の入出力は、s01b（入力のパスが固定）を除いて引数で受け取っている。
+旧パス（`scripts/japanese_kame/02e_generate_moshirag_v5.py` など）から移した対応は `docs/file_moves_20261004.tsv` にある。
