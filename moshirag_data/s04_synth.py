@@ -110,9 +110,48 @@ def sha(path: Path) -> str:
     return h.hexdigest()[:16]
 
 
+def claim_from_pool(pool: Path, claim: Path):
+    """共有の置き場（pool）から台本を 1 件ずつ取り出す（--pool_dir のとき、--in_dir の代わりに使う）。
+
+    ## なぜ必要か
+
+    --in_dir と --shard/--nshard は、担当を起動時に固定で割る。GPU の種類が混ざる研究室では
+    速いサーバから順に担当を作り終えて空き、遅いサーバの残りだけが続く（10/1〜10/3 に g26・g20・g21 が
+    計 50 時間以上空いた）。取り出し方式なら、空いた worker が残りを取りに行くので、最後までそろって終わる。
+
+    ## 取り出し方
+
+    pool の台本を、自分用のフォルダ（claim）へ名前を付け替えて移せたら、自分の担当になる。
+    同じファイルを 2 つの worker が同時に移そうとしても、成功するのは 1 つだけで、
+    もう一方は FileNotFoundError になって次の候補へ進む（pool と claim が同じファイルシステムにあるため）。
+    取り合いを減らすため、候補はランダムに選ぶ。pool が空になったら終わる。
+
+    ## worker が途中で止まったとき
+
+    claim に移したまま音声ができていない台本が残る。worker をすべて止めてから、
+    音声の無いものを pool に戻せば、続きから作り直される。
+    """
+    import random
+    claim.mkdir(parents=True, exist_ok=True)
+    rng = random.Random()
+    while True:
+        names = [p.name for p in pool.glob("*.txt")]
+        if not names:
+            return
+        name = rng.choice(names)
+        try:
+            os.rename(pool / name, claim / name)
+        except FileNotFoundError:
+            continue                       # ほかの worker が先に取った
+        yield claim / name
+
+
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--in_dir", required=True, help="台本（.txt）のディレクトリ")
+    ap.add_argument("--in_dir", help="台本（.txt）のディレクトリ（--shard/--nshard で固定に割る）")
+    ap.add_argument("--pool_dir", help="台本の共有の置き場。指定すると、空いた worker が 1 件ずつ取りに行く"
+                                       "（--in_dir の代わり。claim_from_pool を参照）")
+    ap.add_argument("--claim_dir", help="--pool_dir のとき、取り出した台本を移すこの worker 用のフォルダ")
     ap.add_argument("--out_dir", required=True)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshard", type=int, default=1)
@@ -131,6 +170,8 @@ def main():
                          "失敗扱いになるため（9/29 の g23 で 6 会話）、飛ばさずに待つ")
     ap.add_argument("--oom_wait", type=float, default=300, help="やり直すまでに待つ秒数")
     a = ap.parse_args()
+    if bool(a.in_dir) == bool(a.pool_dir) or (a.pool_dir and not a.claim_dir):
+        ap.error("--in_dir か、--pool_dir と --claim_dir の組のどちらか一方を指定する")
     t_start = time.time()
 
     # 外部接続の監査は、モデルやライブラリを読み込む前に仕掛ける
@@ -146,14 +187,25 @@ def main():
 
     model_dir = with_retry(lambda: resolve_model("llm-jp/zoom1-dialogue-tts", "drop", None, None),
                            "モデルの組み立て")
-    in_dir, out_dir = Path(a.in_dir), Path(a.out_dir)
+    out_dir = Path(a.out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    files = sorted(in_dir.glob("*.txt"))
-    # 添字は分割前のまま保つ（会話生成と同じ方針）
-    targets = [f for i, f in enumerate(files) if i % a.nshard == a.shard]
-    print(f"  台本 {len(files):,} 件 / シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件",
-          flush=True)
+    if a.pool_dir:
+        pool = Path(a.pool_dir)
+        targets = claim_from_pool(pool, Path(a.claim_dir))
+        print(f"  共有の置き場から取り出す：{pool}（いま {len(list(pool.glob('*.txt'))):,} 件）"
+              f" → {a.claim_dir}", flush=True)
+    else:
+        files = sorted(Path(a.in_dir).glob("*.txt"))
+        # 添字は分割前のまま保つ（会話生成と同じ方針）
+        targets = [f for i, f in enumerate(files) if i % a.nshard == a.shard]
+        print(f"  台本 {len(files):,} 件 / シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件",
+              flush=True)
+
+    def release(f: Path):
+        """止めるときに、取り出したまま作っていない台本を置き場に戻す（取り出し方式のときだけ）。"""
+        if a.pool_dir:
+            os.rename(f, pool / f.name)
 
     def run(script: Path, out: Path):
         return synthesize(
@@ -221,9 +273,11 @@ def main():
     t0 = time.time()
     for f in targets:
         if a.limit and n >= a.limit:
+            release(f)
             break
         if a.max_seconds and time.time() - t_start > a.max_seconds:
             print(f"  起動から {a.max_seconds:.0f} 秒を過ぎたので、新しい会話を始めずに止める", flush=True)
+            release(f)
             break
         out = out_dir / f"{f.stem}.wav"
         if out.exists() and out.stat().st_size > 0:
