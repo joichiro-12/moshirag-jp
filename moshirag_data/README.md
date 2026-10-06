@@ -55,7 +55,6 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 | --- | --- | --- | --- | --- | --- |
 | s01 | `s01c_wiki_qa.py` | （日本語 Wikipedia。`--wiki_dir` で渡す） | `wiki_qa.sNNNofNNN.jsonl` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/wikiqa_main.pbs` |
 | s02 | `s02_dialogue.py` | s01 | `data/moshirag_jp/<名前>/<会話>.{json,txt}` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/gen_wiki_main.pbs` |
-| s02b | `s02b_rebuild_references.py` | s02 | 別のフォルダ（例：`pilot5k_fixed`） | 標準ライブラリだけ | 手で実行。旧版の s02 で作った会話の修正用 |
 | s03 | `s03_tts_input.py` | s02 | `<会話>.{txt,json,struct.json}` | 標準ライブラリだけ | 手で実行 |
 | s04 | `s04_synth.py` | s03 の台本 | `<会話>.wav`・`.manifest.json`・`_turns/` | TTS（zoom1-tts）の venv | ABCI：`jobs/synth/synth_resv.pbs`／研究室：`tools/lab/launch_pool.sh` |
 | s05 | `s05_align.py` | s04 | `words/<会話>.json` | MFA の conda 環境 | 研究室：`tools/lab/batch_align.sh` |
@@ -80,7 +79,7 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 | --- | --- | --- | --- |
 | s01 | シャードごとの jsonl に追記 | 出力済みの記事は飛ばす | PBS の出力にだけ残る |
 | s02 | 会話ごと | `--resume` で出力済みを飛ばす | 各会話の JSON に `code_commit` |
-| s02b・s03・s06 | 会話ごと | 全部作り直す | s02 の `code_commit` を写すだけ |
+| s03・s06 | 会話ごと | 全部作り直す | s02 の `code_commit` を写すだけ |
 | s04 | 会話ごと | 音声がある会話は飛ばす | ABCI の PBS の出力にだけ残る |
 | s05 | 会話ごと | 本体は全部作り直す。`batch_align.sh` が語の時刻の無い会話だけを渡す | ABCI の PBS の出力にだけ残る |
 | s07・s08・s09 | 会話ごと | 出力済みを飛ばす（s07・s08 は `--resume`） | 無い |
