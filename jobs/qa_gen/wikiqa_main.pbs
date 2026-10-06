@@ -5,8 +5,10 @@
 #
 # 規模の根拠：JaQuAD の 35,687 トピックの 5.6 倍。4 スタイルに広げれば 80 万会話になり、
 # 当面の音声化能力（36 会話/時/GPU）を大きく超えるため、これ以上は先に作っても使えない。
-# 候補は 740,916 件あるので、必要になれば --num_samples を上げるだけで増やせる
-# （シャッフルは乱数種のみに依存するため、既存分はそのまま活きる）。
+# 記事は ja_wiki の全件から取る（事前の絞り込みはしない）。必要になれば --num_samples を
+# 上げるだけで増やせる（シャッフルは乱数種のみに依存するため、既存分はそのまま活きる）。
+# 2026-10-06 に入力を候補記事（旧 s01b の出力、740,916 件）から ja_wiki の全件に変えたので、
+# それより前の出力とは記事の並びが違う。出力済みの記事は wiki_id で飛ばす。
 #
 # 実測スループットは 26,866 件/時（1 GPU、32 並列）。8 分割で 1 シャード約 1 時間。
 #PBS -P gcg51557
@@ -37,7 +39,7 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; NAME=llm-jp-4-32b-a3b-thinking
-IN=data/japanese_kame/qa_pairs/wiki_candidates.jsonl
+WIKI=/groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki
 OUT=data/japanese_kame/qa_pairs/wiki_qa.jsonl
 TOTAL=200000
 
@@ -59,9 +61,9 @@ done
 
 S=$(date +%s)
 $VENV/bin/python moshirag_data/s01c_wiki_qa.py \
-    --input_file "$IN" --output_file "$OUT" \
+    --wiki_dir "$WIKI" --output_file "$OUT" \
     --num_samples $TOTAL --seed 1 --shard "$SHARD" --nshard "$NSHARD" \
-    --workers 32 --effort low --role default \
+    --workers 32 --effort low \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
 E=$(date +%s)
 

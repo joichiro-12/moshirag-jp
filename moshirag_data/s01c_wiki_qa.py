@@ -1,12 +1,24 @@
-"""s01b の候補記事から、LLM で問いと答えの組を作る。
+"""日本語 Wikipedia（ja_wiki）の記事から、LLM で問いと答えの組を作る。
 
-記事の適否判定と QA 生成を 1 回の呼び出しで行い、題材にならない記事はスキップさせる。
-出力は jaquad.jsonl と同じ形で、そのまま s02 の --input_file に渡せる。
+どんな話題を聞かれても答えられるモデルにするため、記事を事前に絞り込まず、
+ja_wiki の記事を乱数種でシャッフルして前から順に LLM に渡す。
+LLM には記事の冒頭（--lead_chars 文字）を渡し、記事の適否判定と QA 生成を 1 回の呼び出しで行う。
+事実を 1 つも取り出せない記事などは、LLM が「スキップ」と返し、出力に残らない。
+出力はそのまま s02 の --input_file に渡せる。
 
-Each line: {"question": "...", "answer": "...", "source": "...", "title": "...", "url": "...", "index": ...}
+入力（ja_wiki の *.jsonl.gz の各行）: {"text": "本文", "meta": {"id": ..., "title": ..., "url": ...}}
+出力の各行: {"question": "...", "answer": "...", "source": "ja_wiki", "category": "wiki_generated",
+            "wiki_id": "...", "title": "...", "url": "...", "index": ...}
+
+Usage:
+    （本番は jobs/qa_gen/wikiqa_main.pbs。vLLM のサーバを立ててから呼ぶ）
+    $VENV/bin/python moshirag_data/s01c_wiki_qa.py \
+        --wiki_dir /groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki \
+        --output_file data/japanese_kame/qa_pairs/wiki_qa.jsonl --num_samples 200000 \
+        --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
 """
 from __future__ import annotations
-import argparse, json, os, random, re, sys
+import argparse, glob, gzip, json, os, random, re, sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -56,63 +68,6 @@ Wikipedia の記事の冒頭を渡します。その内容から、**会話の�
 スキップ"""
 
 
-# 既定より厳しい判定。対象そのものの知名度を見る。
-# 既定は 1.6% しか落とさず、無名の人物・地方の施設が残った（パイロット 1,000 件で確認）。
-QA_ROLE_STRICT = """\
-Wikipedia の記事の冒頭を渡します。その内容から、**会話の中で自然に出てきそうな問い**と、
-その答えを 1 組作ってください。
-
-まず、**その記事の対象を、人が雑談や相談の中で自発的に持ち出すか**を判断してください。
-持ち出さないものは、問いを作らず「スキップ」とだけ書いてください。
-
-**スキップするもの（対象そのものが知られていない）**
-
-- 専門家の間でしか知られていない人物。地方の実業家、地域史の人物、脇役の研究者など
-- 外国のスポーツ選手・芸能人のうち、日本でほとんど報じられない人
-- 地方の施設、団体の支部、道路、バスの営業所、個別の建物
-- 作品に付随するもの（サウンドトラック、単発のイベント、個別の話数）
-- 個別の艦船・車両・機体のうち、事件や事故で知られていないもの
-- 統計や年表だけで構成され、人が尋ねる内容が無いもの
-
-**残すもの（対象が知られている、または誰でも関心を持ちうる）**
-
-- 歴史上の出来事、よく知られた人物、国や地域、制度や法律
-- 食べ物、動植物、自然現象、病気、技術、学問の概念
-- 広く知られた作品・企業・製品・スポーツチーム
-- 日常で話題になる物事（天気、交通、健康、料理、旅行など）
-
-残す場合は次の条件で問いと答えを作ってください。
-
-- 答えは**記事に書かれている事実**にする。記事に無いことを書かない
-- 答えは短くする。固有名詞・数値・短い語句
-- 問いは、記事を読んでいない人が口に出しそうなものにする
-- 問いに答えを含めない
-
-出力は次の 2 行だけ。スキップの場合は「スキップ」の 1 行だけ。
-
-問い: ...
-答え: ...
-
-例：
-
-記事タイトル: 手塚治虫
-記事冒頭: 手塚 治虫（てづか おさむ、1928年11月3日 - 1989年2月9日）は、日本の漫画家、
-アニメーター、アニメーション監督。医師免許取得者であり、医学博士...
-
-問い: 漫画家で医師免許も持っていた人っていましたよね、誰でしたっけ
-答え: 手塚治虫
-
-記事タイトル: 黒田茂助
-記事冒頭: 黒田 茂助（くろだ もすけ）は、明治期の漆器商。石川県に生まれ...
-
-スキップ
-
-記事タイトル: 東急バス高津営業所
-記事冒頭: 東急バス高津営業所は、神奈川県川崎市高津区に所在する東急バスの営業所...
-
-スキップ"""
-
-ROLES = {"default": QA_ROLE, "strict": QA_ROLE_STRICT}
 
 
 def parse(out: str) -> tuple[str, str] | None:
@@ -133,7 +88,8 @@ def parse(out: str) -> tuple[str, str] | None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--input_file", required=True, help="s01b の出力")
+    ap.add_argument("--wiki_dir", required=True, help="ja_wiki の *.jsonl.gz を置いたディレクトリ")
+    ap.add_argument("--lead_chars", type=int, default=1000, help="LLM に渡す本文の冒頭の長さ")
     ap.add_argument("--output_file", required=True)
     ap.add_argument("--num_samples", type=int, default=0, help="0 で全件")
     ap.add_argument("--seed", type=int, default=1)
@@ -141,8 +97,6 @@ def main():
     ap.add_argument("--nshard", type=int, default=1)
     ap.add_argument("--workers", type=int, default=32)
     ap.add_argument("--effort", default="low")
-    ap.add_argument("--role", default="default", choices=["default", "strict"],
-                    help="判定プロンプト。strict は対象の知名度を見る")
     ap.add_argument("--model", required=True)
     ap.add_argument("--llm_base_url", default=None)
     ap.add_argument("--api_key", default=None)
@@ -151,14 +105,25 @@ def main():
     client = OpenAI(api_key=a.api_key or os.getenv("OPENAI_API_KEY") or "dummy",
                     base_url=a.llm_base_url or None)
 
-    rows = [json.loads(l) for l in open(a.input_file, encoding="utf-8") if l.strip()]
+    # 本文は冒頭だけ持つ（全記事を読むので、本文全体を持つとメモリが足りなくなる）
+    rows = []
+    files = sorted(glob.glob(os.path.join(a.wiki_dir, "*.jsonl.gz")))
+    if not files:
+        sys.exit(f"{a.wiki_dir} に *.jsonl.gz が無い")
+    for f in files:
+        with gzip.open(f, "rt", encoding="utf-8") as fh:
+            for line in fh:
+                d = json.loads(line)
+                m = d["meta"]
+                rows.append({"wiki_id": m.get("id"), "title": m.get("title", ""),
+                             "url": m.get("url"), "lead": d["text"][: a.lead_chars]})
     # s02 と同じ方針：乱数種のみでシャッフルし前方を切る。件数を増やしても既存分が活きる
     random.Random(a.seed).shuffle(rows)
     if a.num_samples:
         rows = rows[: a.num_samples]
     # 添字は分割前のまま保つ（再開時の同一性のため）
     targets = [(i, r) for i, r in enumerate(rows) if i % a.nshard == a.shard]
-    print(f"  判定プロンプト: {a.role} / 候補 {len(rows):,} 件 / "
+    print(f"  記事 {len(rows):,} 件 / "
           f"シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件", flush=True)
 
     # 出力はシャードごとに分ける。共有ファイルへの並行追記はノードをまたぐと
@@ -184,7 +149,7 @@ def main():
         if r["wiki_id"] in done:
             return "skip_done", None
         try:
-            out = call(client, a.model, ROLES[a.role],
+            out = call(client, a.model, QA_ROLE,
                        f"記事タイトル: {r['title']}\n記事冒頭: {r['lead']}",
                        a.effort)
         except Exception as e:  # noqa: BLE001

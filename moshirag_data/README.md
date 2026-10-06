@@ -16,7 +16,8 @@
 - どの時刻に `<ret>` を出すか
 - そのとき読む参照の文
 
-これを、問いと答えの組（QA）から 10 の工程（s01〜s10）を経て作る。
+これを、日本語 Wikipedia の記事から 10 の工程（s01〜s10）を経て作る。
+どんな話題を聞かれても答えられるモデルにするため、題材は Wikipedia の記事だけとし、記事を事前に絞り込まない。
 
 ## 用語
 
@@ -25,7 +26,8 @@
 | 会話 | 利用者役と Moshi 役の 1 回の対話（10〜14 ターン、約 1 分半）。データの単位で、`wiki_qa_012345` のような ID を持つ |
 | lead / body / tail | 検索が要る応答の 3 つの部分。前置き・本題・締め（tail は空のことが多い） |
 | `<ret>` | 検索を起動する特別なトークン。lead の最初のテキストトークンの直前に置く |
-| 参照 | 検索で得たという想定の文書。学習データでは LLM が QA から作る |
+| QA | 会話の種になる問いと答えの組。s01 で Wikipedia の記事から LLM が作る |
+| 参照 | 検索で得たという想定の文書。学習データでは LLM が QA から作る（記事の本文そのものではない） |
 | augmented / unaugmented | 参照を使って答えるターン／使わないターン |
 | 台本 | TTS に渡す、話者つきの発話の並び（`[S1]…` `[S2]…`） |
 | manifest | 音声化の結果。各ターンが何秒から何秒までかを記録した JSON |
@@ -34,7 +36,8 @@
 ## 1 つの会話がどう変わっていくか
 
 ```
-s01  QA            {"question": "日本の実業家で、ウェザーニューズを創業した人は誰ですか", "answer": "石橋博良"}
+s01  QA            Wikipedia の記事の冒頭から、LLM が問いと答えを 1 組作る
+                   {"question": "日本の実業家で、ウェザーニューズを創業した人は誰ですか", "answer": "石橋博良"}
 s02  会話の記録     QA から参照の文 3 本と会話を作り、各ターンが参照を使うか（augmented か）を判定し、lead を書く
 s03  台本           会話の記録を TTS の台本と構造 JSON（lead・body の位置と参照の文）に分ける
 s04  音声           台本を 2 話者のステレオ音声にする（ターンごとの音声と manifest も残る）
@@ -50,11 +53,9 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 
 | 工程 | ファイル | 使う出力 | 出力 | Python の環境 | 投げ方 |
 | --- | --- | --- | --- | --- | --- |
-| s01a | `s01a_jaquad_qa.py` | （Hugging Face の JaQuAD） | `data/japanese_kame/qa_pairs/jaquad.jsonl` | uv（`--extra data`） | 手で実行（`--sources jaquad`） |
-| s01b | `s01b_wiki_candidates.py` | （日本語 Wikipedia。パスは固定） | `wiki_candidates.jsonl` | 標準ライブラリだけ | 手で実行 |
-| s01c | `s01c_wiki_qa.py` | s01b | `wiki_qa.sNNNofNNN.jsonl` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/wikiqa_main.pbs` |
+| s01 | `s01c_wiki_qa.py` | （日本語 Wikipedia。`--wiki_dir` で渡す） | `wiki_qa.sNNNofNNN.jsonl` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/wikiqa_main.pbs` |
 | s02 | `s02_dialogue.py` | s01 | `data/moshirag_jp/<名前>/<会話>.{json,txt}` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/gen_wiki_main.pbs` |
-| s02b | `s02b_rebuild_references.py` | s02 | 別のフォルダ（例：`pilot5k_fixed`） | 標準ライブラリだけ | 手で実行。旧版の不具合の修正用（JaQuAD 分に 1 回適用済み） |
+| s02b | `s02b_rebuild_references.py` | s02 | 別のフォルダ（例：`pilot5k_fixed`） | 標準ライブラリだけ | 手で実行。旧版の s02 で作った会話の修正用 |
 | s03 | `s03_tts_input.py` | s02 | `<会話>.{txt,json,struct.json}` | 標準ライブラリだけ | 手で実行 |
 | s04 | `s04_synth.py` | s03 の台本 | `<会話>.wav`・`.manifest.json`・`_turns/` | TTS（zoom1-tts）の venv | ABCI：`jobs/synth/synth_resv.pbs`／研究室：`tools/lab/launch_pool.sh` |
 | s05 | `s05_align.py` | s04 | `words/<会話>.json` | MFA の conda 環境 | 研究室：`tools/lab/batch_align.sh` |
@@ -65,6 +66,7 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 | s10 | `s10_pack.py` | s06〜s09 | `*.parquet`（分割） | uv | `jobs/post/stage6_prep.pbs` |
 
 - s07・s08 の実装は `tools/tokenize_audio.py`・`tools/tokenize_text.py` にある（KAME と共有しているため）。ここにあるのは入口だけ
+- s01 の実装は、ファイル名に旧来の `s01c` を残している（以前は s01a で JaQuAD、s01b で候補記事の絞り込みをしていたが、どちらも廃止した）
 - 工程ごとに Python の環境が違うので、全工程をまとめて呼ぶ入口は作っていない
 - PBS はリポジトリのルートで `qsub jobs/…/x.pbs` と投げる。出力は `logs/<ジョブ番号>.pbs1.OU` に出る
 - 研究室サーバには s04 を `~/moshirag_tts/synth_worker.py`、s05 を `~/moshirag_mfa/mfa_align.py` という名前で写してある
@@ -76,13 +78,10 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 
 | 工程 | 出力の単位 | もう一度流したとき | どのコードで作ったかの記録 |
 | --- | --- | --- | --- |
-| s01a・s01b | 1 本の jsonl | 全部作り直す | 無い |
-| s01c | シャードごとの jsonl に追記 | 出力済みの記事は飛ばす | PBS の出力にだけ残る |
+| s01 | シャードごとの jsonl に追記 | 出力済みの記事は飛ばす | PBS の出力にだけ残る |
 | s02 | 会話ごと | `--resume` で出力済みを飛ばす | 各会話の JSON に `code_commit` |
 | s02b・s03・s06 | 会話ごと | 全部作り直す | s02 の `code_commit` を写すだけ |
 | s04 | 会話ごと | 音声がある会話は飛ばす | ABCI の PBS の出力にだけ残る |
 | s05 | 会話ごと | 本体は全部作り直す。`batch_align.sh` が語の時刻の無い会話だけを渡す | ABCI の PBS の出力にだけ残る |
 | s07・s08・s09 | 会話ごと | 出力済みを飛ばす（s07・s08 は `--resume`） | 無い |
 | s10 | parquet の分割 | 全部作り直す | 無い |
-
-旧パス（`scripts/japanese_kame/02e_generate_moshirag_v5.py` など）から移した対応は `docs/file_moves_20261004.tsv` にある。

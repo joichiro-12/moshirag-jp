@@ -4,7 +4,7 @@
 #   qsub -P gcg51557 jobs/qa_gen/wikiqa_pilot.pbs
 #
 # 狙いは 2 つ。
-#   ① 1 件あたりの生成コストを測る（全件 74 万件に投げる前に総コストを確定させる）
+#   ① 1 件あたりの生成コストを測る（全件に投げる前に総コストを確定させる）
 #   ② 採用率と質を見る（LLM が「題材にならない」と判定する割合）
 #PBS -P gcg51557
 #PBS -q rt_HG
@@ -29,7 +29,7 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; PORT=8100; NAME=llm-jp-4-32b-a3b-thinking
-IN=data/japanese_kame/qa_pairs/wiki_candidates.jsonl
+WIKI=/groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki
 OUT=data/japanese_kame/qa_pairs/wiki_qa_pilot.jsonl
 
 echo "===== $(date) $(hostname) ====="
@@ -50,7 +50,7 @@ done
 
 S=$(date +%s)
 $VENV/bin/python moshirag_data/s01c_wiki_qa.py \
-    --input_file "$IN" --output_file "$OUT" \
+    --wiki_dir "$WIKI" --output_file "$OUT" \
     --num_samples 1000 --seed 1 --workers 32 --effort low \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
 E=$(date +%s)

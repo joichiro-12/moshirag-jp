@@ -535,7 +535,7 @@ def main(args) -> None:
 
     with Path(args.input_file).open(encoding="utf-8") as f:
         rows = [json.loads(l) for l in f if l.strip()]
-    # F5: sample at random. Taking the head of jaquad.jsonl gave 20 topics that were all
+    # F5: sample at random. Taking the head of the QA file gave 20 topics that were all
     # from one Wikipedia article, so v1 had zero topic diversity.
     random.Random(args.seed).shuffle(rows)
     rows = rows[: args.num_samples]
