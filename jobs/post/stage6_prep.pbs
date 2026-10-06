@@ -10,7 +10,7 @@ set -u
 cd "${PBS_O_WORKDIR:-$(pwd)}"
 export PATH="$HOME/.local/bin:$PATH"
 B=/groups/gcg51557/experiments/0374_japanese_kame
-uv run --extra data python moshirag_data/s10_pack.py \
+uv run --extra data python moshirag_data/postprocess/s10_pack.py \
   --tokenized_text_dir  $B/stage5_tokenized_text \
   --tokenized_audio_dir $B/stage5_tokenized_audio \
   --ref_embed_dir       $B/stage5_ref_embed \

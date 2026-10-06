@@ -1,11 +1,11 @@
 #!/bin/bash
-# Wikipedia の記事から問いと答えの組を作る（パイロット 1,000 件）。
+# Wikipedia の記事から会話のシナリオを作る（パイロット 1,000 件）。
 #
 #   qsub -P gcg51557 jobs/qa_gen/wikiqa_pilot.pbs
 #
 # 狙いは 2 つ。
 #   ① 1 件あたりの生成コストを測る（全件に投げる前に総コストを確定させる）
-#   ② 採用率と質を見る（LLM が「題材にならない」と判定する割合）
+#   ② シナリオの質を見る（答えが漏れていないか、質問の一覧になっていないか）
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
@@ -30,7 +30,7 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; PORT=8100; NAME=llm-jp-4-32b-a3b-thinking
 WIKI=/groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki
-OUT=data/japanese_kame/qa_pairs/wiki_qa_pilot.jsonl
+OUT=data/japanese_kame/qa_pairs/wiki_scenario_pilot.jsonl
 
 echo "===== $(date) $(hostname) ====="
 git rev-parse --short HEAD; git status --porcelain | wc -l
@@ -49,7 +49,7 @@ for i in $(seq 1 150); do
 done
 
 S=$(date +%s)
-$VENV/bin/python moshirag_data/s01c_wiki_qa.py \
+$VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py \
     --wiki_dir "$WIKI" --output_file "$OUT" \
     --num_samples 1000 --seed 1 --workers 32 --effort low \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
@@ -57,12 +57,14 @@ E=$(date +%s)
 
 N=$(wc -l < "$OUT" 2>/dev/null || echo 0)
 echo "===== 終了 $(date) ====="
-echo "経過 $((E-S)) 秒 / 採用 $N 件"
-[ "$N" -gt 0 ] && echo "1 件あたり $(awk "BEGIN{printf \"%.2f\", ($E-$S)/$N}") 秒（採用ベース）"
-echo "--- 採用された例 ---"
+echo "経過 $((E-S)) 秒 / 作成 $N 件"
+[ "$N" -gt 0 ] && echo "1 件あたり $(awk "BEGIN{printf \"%.2f\", ($E-$S)/$N}") 秒（作成ベース）"
+echo "--- できた例 ---"
 head -5 "$OUT" 2>/dev/null | python3 -c "
 import json,sys
 for l in sys.stdin:
     d=json.loads(l)
-    print(f\"  【{d['title']}】{d['question']} → {d['answer']}\")
+    print(f\"  【{d['title']}】{d['type']} / {d['persona']}\")
+    for k, v in d['scenario'].items():
+        print(f\"      {k}: {v}\")
 "

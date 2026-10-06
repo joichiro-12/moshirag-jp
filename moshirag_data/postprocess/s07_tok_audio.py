@@ -3,7 +3,7 @@
 実装は tools/tokenize_audio.py で、引数をそのまま渡す入口。
 GPU の種類や TF32 の設定が違うと 1〜2% のトークンが入れ替わる。
 
-    uv run --extra data python -m moshirag_data.s07_tok_audio --help
+    uv run --extra data python -m moshirag_data.postprocess.s07_tok_audio --help
 """
 import runpy
 

@@ -14,7 +14,7 @@ set -u
 cd "${PBS_O_WORKDIR:-$(pwd)}"
 export PATH="$HOME/.local/bin:$PATH"
 B=/groups/gcg51557/experiments/0374_japanese_kame
-uv run --extra data -m moshirag_data.s08_tok_text \
+uv run --extra data -m moshirag_data.postprocess.s08_tok_text \
   --word_transcript_dir $B/stage5_words \
   --output_dir          $B/stage5_tokenized_text \
   --text_tokenizer_repo llm-jp/j-moshi-v1 \

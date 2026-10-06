@@ -13,7 +13,7 @@ export PATH="$HOME/.local/bin:$PATH"
 source /etc/profile.d/modules.sh 2>/dev/null || true
 module load cuda/12.6 2>/dev/null || true
 B=/groups/gcg51557/experiments/0374_japanese_kame
-uv run --extra data -m moshirag_data.s07_tok_audio \
+uv run --extra data -m moshirag_data.postprocess.s07_tok_audio \
   --audio_dir  $B/stage5_audio \
   --output_dir $B/stage5_tokenized_audio \
   --num_workers 8
