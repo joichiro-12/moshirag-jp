@@ -1,27 +1,9 @@
-"""合成 manifest から <ret> のフレーム位置と d_lead を算出する。
+"""合成 manifest と struct.json から、<ret> のフレーム位置と d_lead を求める。
 
-論文 §4.2：
+<ret> は lead の最初のテキストトークンの直前（論文 §4.2）。d_lead は lead の継続時間で、
+学習時の遅延サンプリングに使う。
 
-    we replace the text token before the first text token in the lead portion of
-    an RAG-enabled Moshi turn with the <ret> token.
-
-<ret> は lead 部分の最初のテキストトークンの直前に置く。d_lead は lead の継続時間で、
-学習時の遅延サンプリングに使われる。
-
-    d' = U(0, d_lead)            if d_lead < 2 or p < 0.2
-         U(1.0, d_lead - 1.0)    otherwise
-
-**タイミングは合成 manifest（真値）から取る。** 元実装は多チャネル TTS が forced alignment を
-返すためそれを使っているが、我々の TTS はターン単位の onset / duration を manifest で返すので、
-lead / body を別ターンとして合成すれば境界が誤差なく求まる。後段 ASR によるアライメントに
-依存させない（依存させた版は長い無音を含むチャネルで 34 秒ずれた）。
-
-入力
-  --manifest_dir  合成（+ 後段処理）の *.manifest.json
-  --struct_dir    s03（s03_tts_input.py）の *.struct.json
-
-出力
-  {"stem", "frame_rate", "ret_events": [...]}
+Output: {"stem": ..., "frame_rate": ..., "ret_events": [...]}
 """
 
 from __future__ import annotations

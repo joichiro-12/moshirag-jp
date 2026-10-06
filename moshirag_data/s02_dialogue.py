@@ -1,44 +1,16 @@
-"""Generate MoshiRAG-style Japanese conversation scripts (v2, two-axis design).
+"""QA の組から、MoshiRAG 形式の日本語の会話記録を LLM で作る。
 
-（2026-10-04 追記）このファイルは旧 scripts/japanese_kame/02e_generate_moshirag_v5.py（v5）である。
-以下の説明は v2 のときに書かれたもの。v3〜v5 で変わった点は、旧パス 02c〜02e の git の履歴を参照。
-
-Replaces 02b_generate_moshirag_scripts.py. The v1 design generated the record
-line-by-line with the reference produced *inside* the turn loop; that made every call
-carry the whole task description and produced conversations that did not hold together
-(see dev/llm-jp/260812_設計判断/スモーク生成v1_評価.md).
-
-v2 splits the work along two axes:
-
-  Axis A (independent of the conversation)
-      QA {question, answer} -> 3 reference passages, one containing the answer and two
-      covering other aspects of the same topic. Retrieval returns passages with surplus
-      content, so the passages must have surplus too; otherwise the model learns to read
-      out whatever it is handed.
-
-  Axis B stage 1 : plain conversation. Two roles only (human / assistant), no markup.
-                   The human never sees the passages (T-3). The assistant does, so the
-                   causal direction is passage -> utterance.
-  Axis B stage 2a: judge which passage each assistant utterance used ("none" = the turn
-                   needs no retrieval, which is what supplies unaugmented turns).
-  Axis B stage 2b: for augmented turns, write the lead from the preceding conversation
-                   only -- it never sees the body or the passage, so T-4 holds
-                   structurally. tail defaults to [empty].
-
-Naming: `moshi:` is a speaker label in the record (following the original
-implementation). It is NOT a character name -- nothing may address the assistant by
-name, since "Moshi" is the model, not a persona.
+1. QA → 参照文 3 本（1 本は答えを含む）
+2. 参照文を見た assistant と見ない human の素の会話
+3. assistant の各発話が使った参照文を判定（none = 検索不要のターン）
+4. 参照文を使ったターンに、直前の会話だけから lead を書く
 
 Usage:
-    （本番の呼び出しは jobs/qa_gen/gen_wiki_main.pbs。vLLM のサーバを立ててから呼ぶ）
+    （本番は jobs/qa_gen/gen_wiki_main.pbs。vLLM のサーバを立ててから呼ぶ）
     $VENV/bin/python moshirag_data/s02_dialogue.py \
         --input_file data/japanese_kame/qa_pairs/wiki_qa.jsonl \
-        --output_dir data/moshirag_jp/wiki_main --num_samples "$NUM" --seed 1 \
-        --shard "$SHARD" --nshard "$NSHARD" \
-        --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" \
-        --min_turns 3 --max_turns 5 --workers 32 \
-        --effort_human high --effort_assistant low --effort_chunk low \
-        --effort_judge low --effort_lead low --resume
+        --output_dir data/moshirag_jp/wiki_main --model "$NAME" \
+        --llm_base_url "http://localhost:${PORT}/v1" --resume
 """
 
 from __future__ import annotations

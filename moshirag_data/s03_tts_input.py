@@ -1,19 +1,10 @@
-"""行指向レコード → 音声合成の入力一式（台本 / dialogue JSON / 構造注釈）。
+"""会話記録から、音声合成の入力一式を作る。
 
-MoshiRAG-JP の会話レコードから、工程 3 以降で必要になる 3 つを作る。
+  <stem>.txt          FireRedTTS2 の台本（[S1]=人間 / [S2]=moshi）
+  <stem>.json         dialogue JSON [{"speaker": "A"|"B", "text": ...}]（A=人間 / B=moshi）
+  <stem>.struct.json  lead/body/tail の turn index と参照文（s06 で使う）
 
-  <stem>.txt        FireRedTTS2 の台本（[S1]=人間 / [S2]=moshi）
-  <stem>.json       04_word_alignment.py 用の dialogue JSON
-                    [{"speaker": "A"|"B", "text": ...}, ...]  A=人間(L) / B=moshi(R)
-  <stem>.struct.json  lead/body/tail の境界と参照文書。<ret> 配置に使う
-
-台本では lead / body / tail を **別ターン**として出す。同一話者の連続ターンは
-butt-join されるため音声は連続した一発話になり、かつ合成 manifest から各部の onset が
-真値として取れる。struct.json はその turn index を保持し、08 側が manifest と突き合わせて
-<ret> のフレーム位置と d_lead を求める。
-
-以前は 1 ターンに結合し、境界を forced alignment で推定していた。B チャネルは 6 割以上が
-無音のため stable-ts が破綻し、真値より 34 秒ずれた（d_lead が最大 43.68 秒になった）。
+lead / body / tail は別ターンとして出し、manifest から各部の onset を真値で取れるようにする。
 """
 
 from __future__ import annotations
