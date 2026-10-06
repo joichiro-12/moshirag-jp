@@ -45,6 +45,29 @@ CODE_DIRTY = bool(_git("status", "--porcelain"))
 
 
 # ======================================================================================
+# 話し始めのパターン（会話ごとに乱択）
+# ======================================================================================
+# user: 01 の最初の発話に渡す指定。内容は縛らず、形だけを決める
+# moshi: 最初の応答の応じ方。Moshi の仕様なので明確に決める。None なら通常どおり（02 から）
+OPENINGS = {
+    "挨拶だけ": dict(weight=1,
+                 user="あいさつや呼びかけだけを言う。用件はまだ言わない",
+                 moshi="あいさつを返し、続けて「何かご用ですか？」と言う。それ以外は言わない"),
+    "雑談": dict(weight=1,
+               user="質問ではない、ちょっとした話をする。用件はまだ言わない",
+               moshi="相手の話に短くリアクションする（相槌・共感・感想）。具体的な事実は言わず、質問もしない"),
+    "質問": dict(weight=1,
+               user="知りたいことを聞く",
+               moshi=None),
+}
+
+
+def sample_opening(rng: random.Random) -> str:
+    names = list(OPENINGS)
+    return rng.choices(names, weights=[OPENINGS[n]["weight"] for n in names])[0]
+
+
+# ======================================================================================
 # プロンプト
 # ======================================================================================
 # ---- 01 ユーザ発話 ------------------------------------------------------------------
@@ -52,13 +75,12 @@ USER_ROLE = """\
 音声対話 AI と人の会話を作っています。あなたは人の側の次の 1 発話を書いてください。
 あなたはシナリオの人物になりきります。話し相手は {moshi}。
 
-- 会話はあなたから始める。最初の発話は、状況に合った呼びかけやあいさつから入ってよい
+- 会話はあなたから始める。最初の発話は、指定された形に従う
 - シナリオの状況と関心に沿って話す。ただし関心を一度に全部言わない
 - 次に何を言うかは、相手の直前の応答を受けて決める。納得・驚き・聞き返し・異論・脱線など、相手の答えに反応する
 - 相手がまだ言っていない事実を、自分から言わない。前提知識の程度を超える専門用語を使わない
 - 相手はあなたの事情を知らない。必要なら、誰の何についてかを自分の言葉で言う
 - 書き言葉のまま読み上げない。試験問題のような聞き方をしない
-- 一度に一つのことだけ言う。40 文字程度まで
 - 年齢・性別・職業に合った言葉づかいにする
 - 会話の終わり方：{end}
 - 会話を終えるときは、最後の発話の行末に EOC と書く
@@ -74,6 +96,7 @@ USER_ROLE = """\
 - 最初の関心: 記事の川の近くで、子どもと楽しめる場所があるか
 - 派生しうる関心: その川がどうして有名なのか
 - なぜ関心があるのか: 子どもが川遊びをしたがっている
+最初の発話の形: 質問（知りたいことを聞く）
 ここまでの会話:
 （まだ無い）
 人: ねえ、信濃川の近くって、子ども連れで遊べるところあるかな。
@@ -86,11 +109,35 @@ USER_ROLE = """\
 - 派生しうる関心: 長野県での呼び名
 - なぜ関心があるのか: 若いころ新潟に住んでいて、学校でそう習った気がする
 ここまでの会話:
-人: もしもし、ちょっと聞きたいことがあるんだけど。
-モシ: はい、どうぞ。何でも聞いてください。
+人: もしもし。
+モシ: もしもし。何かご用ですか？
 人: 日本で一番長い川って、信濃川で合ってたかな。
 モシ: はい、信濃川で合っています。長さは三百六十七キロほどあります。
-人: そうそう、やっぱりね。ありがとう。EOC"""
+人: そうそう、やっぱりね。ありがとう。EOC
+
+人物: 年齢層: 20代 / 性別: 男性 / 職業: 大学生 / 前提知識: 少し知っている
+会話の型: 雑談
+シナリオ:
+- 状況: アルバイト帰りの夜、部屋でくつろぎながら話しかけている
+- 最初の関心: 記事の祭りがどんな雰囲気なのか
+- 派生しうる関心: その祭りがいつごろ始まったのか
+- なぜ関心があるのか: 友だちに今度一緒に行こうと誘われた
+最初の発話の形: 雑談（質問ではない、ちょっとした話をする。用件はまだ言わない）
+ここまでの会話:
+（まだ無い）
+人: いやー、今日のバイト、めっちゃ疲れたわ。
+
+人物: 年齢層: 20代 / 性別: 男性 / 職業: 大学生 / 前提知識: 少し知っている
+会話の型: 雑談
+シナリオ:
+- 状況: アルバイト帰りの夜、部屋でくつろぎながら話しかけている
+- 最初の関心: 記事の祭りがどんな雰囲気なのか
+- 派生しうる関心: その祭りがいつごろ始まったのか
+- なぜ関心があるのか: 友だちに今度一緒に行こうと誘われた
+ここまでの会話:
+人: いやー、今日のバイト、めっちゃ疲れたわ。
+モシ: そうなんですね、それはお疲れさまでした。
+人: そういえばさ、友だちに祇園祭に誘われたんだよね。あれってどんな感じなの？"""
 
 # ---- 02 検索の要否 ------------------------------------------------------------------
 NEED_ROLE = """\
@@ -198,6 +245,7 @@ BODY_ROLE = """\
 
 - 参照チャンクは、モシが検索して得た短い文書。検索したターンだけ渡される
 - 人の直前の発話に、話し言葉で自然に応じる
+- 応じ方が指定されたときは、それに従う
 - 参照チャンクが渡されたとき：具体的な事実は参照チャンクに書かれていることだけを使う。必要な部分だけを、自分の言葉で話す。参照チャンクに答えが無い、または「不明」と書かれていれば、分かりませんと言う
 - 参照チャンクが無いとき：名前・年・数値などの具体的な事実を新しく言わない。一般常識と、会話にすでに出たことで応じる。分からないことは分からないと言う
 - 前置きを話し始めているときは、その続きから話す。前置きを繰り返さない
@@ -228,9 +276,16 @@ BODY_ROLE = """\
 続き: そこまでは分からないです。長野では千曲川と呼ばれている、というのは知っています。
 
 参照チャンク: なし
+応じ方: あいさつを返し、続けて「何かご用ですか？」と言う。それ以外は言わない
 ここまでの会話:
-人: もしもし、ちょっと聞いてもいい？
-続き: はい、どうぞ。何でも聞いてください。
+人: こんにちは。
+続き: こんにちは。何かご用ですか？
+
+参照チャンク: なし
+応じ方: 相手の話に短くリアクションする（相槌・共感・感想）。具体的な事実は言わず、質問もしない
+ここまでの会話:
+人: いやー、今日は朝からばたばたしててさ。
+続き: そうなんですね、それはお疲れさまです。
 
 参照チャンク: なし
 ここまでの会話:
@@ -304,7 +359,7 @@ def render_script(turns: list[dict]) -> str:
     return "\n".join(lines)
 
 
-def generate(sc: dict, article: str, client, model, args) -> dict:
+def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     persona_txt = render_persona(sc["persona"])
     scenario_txt = render_scenario(sc["scenario"])
     ty = sc["type"]
@@ -319,9 +374,10 @@ def generate(sc: dict, article: str, client, model, args) -> dict:
     turns: list[dict] = []
     ended = False
     for k in range(args.max_turns):
-        # ---- 01 ユーザ発話：シナリオ・会話履歴 ----------------------------------------
+        # ---- 01 ユーザ発話：シナリオ・会話履歴（最初だけ話し始めの形を指定）--------------
+        form = f"最初の発話の形: {opening}（{OPENINGS[opening]['user']}）\n" if k == 0 else ""
         u = first_line(call(client, model, user_sys,
-                            f"{user_head}ここまでの会話:\n{render_history(hist)}\n人:",
+                            f"{user_head}{form}ここまでの会話:\n{render_history(hist)}\n人:",
                             args.effort_user))
         u = strip_label(u, "人", "ユーザ", "人間")
         if u.rstrip().endswith("EOC"):
@@ -339,10 +395,15 @@ def generate(sc: dict, article: str, client, model, args) -> dict:
         turn = {"user": u}
 
         # ---- 02 検索の要否：会話履歴・知識の範囲 --------------------------------------
-        need_raw = call(client, model, need_sys,
-                        f"会話:\n{render_history(hist)}\n判定:", args.effort_need)
-        turn["need"] = parse_need(need_raw)
-        turn["need_raw"] = need_raw
+        # 挨拶だけ・雑談で始まった最初の応答は、決まった応じ方で返し、検索しない
+        rule = OPENINGS[opening]["moshi"] if k == 0 else None
+        if rule:
+            turn.update(need=False, need_raw=f"（最初の応答・{opening}：検索しない）", reply_rule=rule)
+        else:
+            need_raw = call(client, model, need_sys,
+                            f"会話:\n{render_history(hist)}\n判定:", args.effort_need)
+            turn["need"] = parse_need(need_raw)
+            turn["need_raw"] = need_raw
 
         lead = ref = ""
         if turn["need"]:
@@ -360,7 +421,10 @@ def generate(sc: dict, article: str, client, model, args) -> dict:
                 raise RuntimeError("lead か参照チャンクが空")
 
         # ---- 03 body / 応答：lead までの会話履歴・ペルソナ・参照チャンク ----------------------
-        q = f"参照チャンク: {ref or 'なし'}\nここまでの会話:\n{render_history(hist)}\n"
+        q = f"参照チャンク: {ref or 'なし'}\n"
+        if turn.get("reply_rule"):
+            q += f"応じ方: {turn['reply_rule']}\n"
+        q += f"ここまでの会話:\n{render_history(hist)}\n"
         if lead:
             q += f"モシ（話し始めている前置き）: {lead}\n"
         body = first_line(call(client, model, body_sys, q + "続き:", args.effort_body))
@@ -398,6 +462,7 @@ def generate(sc: dict, article: str, client, model, args) -> dict:
         "topic": sc["title"],                 # s03 が struct.json に写す
         "persona": sc["persona"],
         "type": ty,
+        "opening": opening,
         "scenario": sc["scenario"],
         "article_chars": len(article),
         "chunks": [t["reference"] for t in turns if t.get("need")],   # s03 が struct.json に写す
@@ -446,9 +511,11 @@ def main(args) -> None:
             return stem, "FAIL 記事が見つからない"
         # 記事は s01 がシナリオを作ったときと同じ長さに切る
         article = articles[sc["wiki_id"]][: sc.get("article_chars", args.article_chars)]
+        # 話し始めのパターンは i から決める（再開しても同じになる）
+        opening = sample_opening(random.Random(args.seed * 1000 + i))
         for attempt in range(3):
             try:
-                conv = generate(sc, article, client, args.model, args)
+                conv = generate(sc, article, opening, client, args.model, args)
                 conv["stem"] = stem
                 if not conv["check"]["passed"]:
                     (rej / f"{stem}.json").write_text(
