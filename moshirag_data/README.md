@@ -73,7 +73,7 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 | s09 | `postprocess/s09_ref_embed.py` | s06 | `<会話>.npz` | uv＋GPU（約 14 GB） | `jobs/post/stage5c.pbs` |
 | s10 | `postprocess/s10_pack.py` | s06〜s09 | `*.parquet`（分割） | uv | `jobs/post/stage6_prep.pbs` |
 
-- s01・s02 が共有するものは `text_dialogue/` の `llm.py`（LLM の呼び出しと思考の除去）・`wiki.py`（記事の読み込み）・`persona.py`（Moshi とユーザのペルソナ、会話の型、発話の書き方）にある。工程ごとのプロンプトは各工程のファイルに置く
+- s01・s02 が共有する部品は `text_dialogue/libs/` の `llm.py`（LLM の呼び出しと思考の除去）・`wiki.py`（記事の読み込み）・`persona.py`（定数とプロンプトの読み込みと整形）にある。Moshi とユーザのペルソナ、会話の型、発話の書き方、フィラー、話し始めのパターン、Moshi の応じ方の決まりは `text_dialogue/constants/` の JSON に置く。工程ごとのプロンプトの本文は `text_dialogue/prompts/` に、工程の番号を付けたテキストファイル（`01_user.txt`・`03_body.txt` など）で置く
 - 2026-10-06 に移したファイルの旧パスと新パスは `docs/file_moves_20261006.tsv` にある
 - s07・s08 の実装は `tools/tokenize_audio.py`・`tools/tokenize_text.py` にある（KAME と共有しているため）。ここにあるのは入口だけ
 - 工程ごとに Python の環境が違うので、全工程をまとめて呼ぶ入口は作っていない
