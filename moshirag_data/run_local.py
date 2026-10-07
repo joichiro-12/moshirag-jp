@@ -531,6 +531,8 @@ def summarize(work: Path) -> dict:
             "うち検索した": len(aug),
             "うち聞き返した": sum(1 for t in turns if t.get("clarify")),
             "検索した応答のうち参照チャンクに「不明」を含む": sum(1 for t in aug if t.get("ref_has_unknown")),
+            "参照チャンクの根拠（記事・知識・推論の組み合わせ）": dist("・".join(t.get("ref_basis") or []) or "なし"
+                                                       for t in aug),
         },
         "s02 不合格の理由（04 の出力の全文、会話ごと）": {stem: c["check"]["raw"] for stem, c in rejected.items()},
         "時間と料金": summarize_log(work),
