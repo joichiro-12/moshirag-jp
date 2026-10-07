@@ -24,11 +24,11 @@
 | 用語 | 意味 |
 | --- | --- |
 | 会話 | 利用者役と Moshi 役の 1 回の対話。長さは利用者役が EOC を出すまで（上限 8 往復）。データの単位で、`wiki_scenario_012345` のような ID を持つ（2026-10-06 より前の QA 方式の会話は `wiki_qa_012345`） |
-| lead / body / tail | 検索が要る応答の 3 つの部分。前置き・本題・締め（tail は空のことが多い） |
+| lead / body | 検索が要る応答の 2 つの部分。前置き・本題 |
 | `<ret>` | 検索を起動する特別なトークン。lead の最初のテキストトークンの直前に置く |
-| シナリオ | 会話の種。利用者役のペルソナ・会話の型・動機（状況・最初の関心・派生しうる関心・なぜ関心があるのか）。s01 で Wikipedia の記事から作る。答えも質問の一覧も書かない |
+| シナリオ | 会話の種。利用者役のペルソナ・ユーザの目的（user goal）・動機（状況・最初の関心・派生しうる関心・なぜ関心があるのか）。s01 で Wikipedia の記事から作る。答えも質問の一覧も書かない |
 | 参照 | 検索で得たという想定の文書。学習データでは、LLM が Wikipedia の記事から、利用者役の直前の発話に合わせて作る（記事の本文そのものではない） |
-| EOC | 利用者役が会話を終えるときに出す印。いつ出すかは会話の型（目的達成・好奇心・確認・雑談・反論・モシ自身・範囲外）で決まる |
+| EOC | 利用者役が会話を終えるときに出す印。いつ出すかはユーザの目的（user goal。会話全体の目的と終了条件。`text_dialogue/constants/user_goals.json`）で決まる |
 | augmented / unaugmented | 参照を使って答えるターン／使わないターン |
 | 台本 | TTS に渡す、話者つきの発話の並び（`[S1]…` `[S2]…`） |
 | manifest | 音声化の結果。各ターンが何秒から何秒までかを記録した JSON |
@@ -37,7 +37,7 @@
 ## 1 つの会話がどう変わっていくか
 
 ```
-s01  シナリオ       Wikipedia の記事と、乱択した利用者役のペルソナ・会話の型から、LLM が動機を書く
+s01  シナリオ       Wikipedia の記事と、乱択した利用者役のペルソナ・ユーザの目的から、LLM が動機を書く
 s02  会話の記録     利用者役の発話 → 検索の要否 →（要るときだけ lead と参照）→ Moshi の応答 を EOC まで繰り返し、
                    最後に台本全体を検査する（不合格は rejected/ に置き、先へ進めない）
 s03  台本           会話の記録を TTS の台本と構造 JSON（lead・body の位置と参照の文）に分ける
@@ -73,10 +73,11 @@ s10  parquet        s06〜s09 をまとめて学習用の parquet にする
 | s09 | `postprocess/s09_ref_embed.py` | s06 | `<会話>.npz` | uv＋GPU（約 14 GB） | `jobs/post/stage5c.pbs` |
 | s10 | `postprocess/s10_pack.py` | s06〜s09 | `*.parquet`（分割） | uv | `jobs/post/stage6_prep.pbs` |
 
-- s01・s02 が共有する部品は `text_dialogue/libs/` の `llm.py`（LLM の呼び出しと思考の除去）・`wiki.py`（記事の読み込み）・`persona.py`（定数とプロンプトの読み込みと整形）にある。Moshi とユーザのペルソナ、会話の型、発話の書き方、フィラー、話し始めのパターン、Moshi の応じ方の決まりは `text_dialogue/constants/` の JSON に置く。工程ごとのプロンプトの本文は `text_dialogue/prompts/` に、工程の番号を付けたテキストファイル（`01_user.txt`・`03_body.txt` など）で置く
+- s01・s02 が共有する部品は `text_dialogue/libs/` の `llm.py`（LLM の呼び出しと思考の除去）・`wiki.py`（記事の読み込み）・`persona.py`（定数とプロンプトの読み込みと整形）にある。Moshi とユーザのペルソナ、ユーザの目的、発話の書き方、フィラー、話し始めのパターン、Moshi の応じ方の決まりは `text_dialogue/constants/` の JSON に置く。工程ごとのプロンプトの本文は `text_dialogue/prompts/` に、工程の番号を付けたテキストファイル（`01_user.txt`・`03_body.txt` など）で置く
 - 2026-10-06 に移したファイルの旧パスと新パスは `docs/file_moves_20261006.tsv` にある
 - s07・s08 の実装は `tools/tokenize_audio.py`・`tools/tokenize_text.py` にある（KAME と共有しているため）。ここにあるのは入口だけ
-- 工程ごとに Python の環境が違うので、全工程をまとめて呼ぶ入口は作っていない
+- 工程ごとに Python の環境が違うので、本番（ABCI）用に全工程をまとめて呼ぶ入口は作っていない
+- 手元（g21）で記事の束を s01〜s10 まで通すときは `run_local.py` を使う（walkthrough.ipynb と同じ処理を全件に流す。`--dry_run` で LLM の呼び出し回数の見積もり、`--steps s01-s03` で工程を選べる）
 - PBS はリポジトリのルートで `qsub jobs/…/x.pbs` と投げる。出力は `logs/<ジョブ番号>.pbs1.OU` に出る
 - 研究室サーバには s04 を `~/moshirag_tts/synth_worker.py`、s05 を `~/moshirag_mfa/mfa_align.py` という名前で写してある
 

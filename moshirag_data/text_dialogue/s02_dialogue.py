@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
 from libs.llm import call, first_line, strip_label
-from libs.persona import (SPOKEN_STYLE, MOSHI_KNOWLEDGE, MOSHI_NAME_ROLE, MOSHI_PERSONA, TYPES,
+from libs.persona import (SPOKEN_STYLE, MOSHI_KNOWLEDGE, MOSHI_NAME_ROLE, MOSHI_PERSONA, USER_GOALS,
                           load_constant, load_prompt, render_fillers, render_persona,
                           render_scenario)
 from libs.wiki import read_articles
@@ -132,9 +132,10 @@ def render_script(turns: list[dict]) -> str:
 def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     persona_txt = render_persona(sc["persona"])
     scenario_txt = render_scenario(sc["scenario"])
-    ty = sc["type"]
-    user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end=TYPES[ty]["end"], spoken_style=SPOKEN_STYLE)
-    user_head = f"人物: {persona_txt}\n会話の型: {ty}\nシナリオ:\n{scenario_txt}\n"
+    goal = sc["user_goal"]
+    user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=USER_GOALS[goal]["end_condition"],
+                                spoken_style=SPOKEN_STYLE)
+    user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\nシナリオ:\n{scenario_txt}\n"
     need_sys = NEED_ROLE.format(knowledge=MOSHI_KNOWLEDGE)
     lead_sys = LEAD_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE, fillers=render_fillers())
     body_sys = BODY_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE)
@@ -222,8 +223,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             continue
         if t["need"]:
             record += ["(augmented)", f"moshi (lead): {t['lead']}",
-                       f"Reference: {t['reference']}", f"moshi (body): {t['body']}",
-                       "moshi (tail): [empty]"]
+                       f"Reference: {t['reference']}", f"moshi (body): {t['body']}"]
         else:
             record += ["(unaugmented)", f"moshi: {t['body']}"]
 
@@ -234,7 +234,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "source": sc.get("source", ""),
         "topic": sc["title"],                 # s03 が struct.json に写す
         "persona": sc["persona"],
-        "type": ty,
+        "user_goal": goal,
         "opening": opening,
         "scenario": sc["scenario"],
         "article_chars": len(article),

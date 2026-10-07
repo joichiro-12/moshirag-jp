@@ -1,4 +1,4 @@
-"""Moshi のペルソナ、ユーザのペルソナと会話の型、発話の書き方。s01・s02 のプロンプトに埋め込む。
+"""Moshi のペルソナ、ユーザのペルソナと目的（user goal）、発話の書き方。s01・s02 のプロンプトに埋め込む。
 
 中身はすべて constants/ の JSON に置き、ここでは読み込みとプロンプト用の整形だけをする。
 各工程のプロンプトの本文は prompts/ のテキストファイルに置き、load_prompt で読む。
@@ -37,8 +37,8 @@ MOSHI_PERSONA: str = "\n".join(f"- {k}：{v}" for k, v in _MOSHI["ペルソナ"]
 MOSHI_KNOWLEDGE: str = "\n".join(f"- {x}" for x in _MOSHI["知識の範囲"])
 
 # ======================================================================================
-# ユーザのペルソナと会話の型（s01 で乱択し、s01 と 01 に見せる）
-#   constants/user_persona.json・constants/conversation_types.json
+# ユーザのペルソナと目的（s01 で乱択し、s01 と 01 に見せる）
+#   constants/user_persona.json・constants/user_goals.json
 # ======================================================================================
 _USER = load_constant("user_persona.json")
 AGES: list = _USER["年齢層"]
@@ -48,8 +48,8 @@ JOBS: dict = _USER["職業"]["年齢層ごと"]
 JOBS_DEFAULT: list = _USER["職業"]["その他の年齢層"]
 KNOWLEDGE: list = _USER["前提知識"]
 
-# 型ごとの説明 desc（0 に見せる）と終わり方 end（01 に見せる）と出現の重み weight
-TYPES: dict = load_constant("conversation_types.json")
+# ユーザの目的（user goal）：会話全体の目的 goal（0 に見せる）と終了条件 end_condition（01 に見せる）と出現の重み weight
+USER_GOALS: dict = load_constant("user_goals.json")
 
 
 def sample_persona(rng: random.Random) -> dict:
@@ -58,9 +58,9 @@ def sample_persona(rng: random.Random) -> dict:
             "職業": rng.choice(JOBS.get(age, JOBS_DEFAULT)), "前提知識": rng.choice(KNOWLEDGE)}
 
 
-def sample_type(rng: random.Random) -> str:
-    names = list(TYPES)
-    return rng.choices(names, weights=[TYPES[n]["weight"] for n in names])[0]
+def sample_user_goal(rng: random.Random) -> str:
+    names = list(USER_GOALS)
+    return rng.choices(names, weights=[USER_GOALS[n]["weight"] for n in names])[0]
 
 
 def render_persona(p: dict) -> str:

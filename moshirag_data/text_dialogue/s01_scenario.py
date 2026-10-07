@@ -2,7 +2,7 @@
 
 入力（ja_wiki の *.jsonl.gz の各行）: {"text": "本文", "meta": {"id": ..., "title": ..., "url": ...}}
 出力の各行: {"wiki_id": ..., "title": ..., "url": ..., "index": ..., "source": "ja_wiki",
-            "article_chars": ..., "persona": {...}, "type": "...", "scenario": {...}}
+            "article_chars": ..., "persona": {...}, "user_goal": "...", "scenario": {...}}
 
 Usage:
     $VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py \
@@ -94,14 +94,14 @@ def main():
             return "skip_done", None
         rng = random.Random(a.seed * 1000003 + i)
         user_persona = persona.sample_persona(rng)
-        ty = persona.sample_type(rng)
+        goal = persona.sample_user_goal(rng)
         article = texts[r["wiki_id"]]
         try:
             out = llm.call(client, a.model,
                            SCENARIO_ROLE.format(moshi=persona.MOSHI_NAME_ROLE,
-                                                type_desc=persona.TYPES[ty]["desc"]),
+                                                goal=persona.USER_GOALS[goal]["goal"]),
                            f"記事タイトル: {r['title']}\n記事: {article}\n"
-                           f"人物: {persona.render_persona(user_persona)}\n会話の型: {ty}\n",
+                           f"人物: {persona.render_persona(user_persona)}\nユーザの目的: {goal}\n",
                            a.effort)
         except Exception as e:  # noqa: BLE001
             return f"FAIL {e}", None
@@ -110,7 +110,7 @@ def main():
             return f"FAIL 4 項目がそろわない: {out[:60]!r}", None
         return "ok", {"wiki_id": r["wiki_id"], "title": r["title"], "url": r["url"],
                       "index": i, "source": "ja_wiki", "article_chars": a.article_chars,
-                      "persona": user_persona, "type": ty, "scenario": sc}
+                      "persona": user_persona, "user_goal": goal, "scenario": sc}
 
     n_ok = n_skip_done = n_fail = 0
     lock = threading.Lock()

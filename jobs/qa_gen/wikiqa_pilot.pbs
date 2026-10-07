@@ -64,7 +64,7 @@ head -5 "$OUT" 2>/dev/null | python3 -c "
 import json,sys
 for l in sys.stdin:
     d=json.loads(l)
-    print(f\"  【{d['title']}】{d['type']} / {d['persona']}\")
+    print(f\"  【{d['title']}】{d['user_goal']} / {d['persona']}\")
     for k, v in d['scenario'].items():
         print(f\"      {k}: {v}\")
 "
