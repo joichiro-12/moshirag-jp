@@ -2,7 +2,29 @@
 
 from __future__ import annotations
 
+import json
+import os
 import re
+import threading
+
+# 環境変数 LLM_RAW_LOG にパスがあれば、すべての呼び出しの生の応答（本文・思考・終了理由）を
+# JSONL で足していく。剥がす前の出力を見るためのもので、モデルの比較や不具合の調査に使う
+_RAW_LOG = os.environ.get("LLM_RAW_LOG")
+_RAW_LOCK = threading.Lock()
+
+
+def _log_raw(model: str, system: str, user: str, effort: str, r) -> None:
+    if not _RAW_LOG:
+        return
+    c = r.choices[0]
+    m = c.message
+    rec = {"model": model, "prompt": system.split("\n", 1)[0], "effort": effort,
+           "user_tail": user[-300:], "content": m.content,
+           "reasoning": getattr(m, "reasoning", None) or getattr(m, "reasoning_content", None),
+           "finish_reason": c.finish_reason}
+    with _RAW_LOCK, open(_RAW_LOG, "a", encoding="utf-8") as f:
+        f.write(json.dumps(rec, ensure_ascii=False) + "\n")
+
 
 _HARMONY_FINAL = re.compile(r"assistant\s*final\s*", re.IGNORECASE)
 
@@ -110,6 +132,7 @@ def _call_once(client, model: str, system: str, user: str, effort: str) -> str:
         r = client.chat.completions.create(
             model=model, messages=msgs, stream=False, extra_body=body
         )
+        _log_raw(model, system, user, effort, r)
         return strip_thinking(r.choices[0].message.content or "")
     shapes = [
         {"reasoning_effort": effort},
@@ -125,6 +148,7 @@ def _call_once(client, model: str, system: str, user: str, effort: str) -> str:
                 model=model, messages=msgs, stream=False, extra_body=body
             )
             _EFFORT_SHAPE.setdefault(effort, i)
+            _log_raw(model, system, user, effort, r)
             return strip_thinking(r.choices[0].message.content or "")
         except Exception as e:  # noqa: BLE001
             err = e
