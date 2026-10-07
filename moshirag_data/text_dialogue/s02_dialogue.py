@@ -50,7 +50,9 @@ CODE_DIRTY = bool(_git("status", "--porcelain"))
 # ======================================================================================
 # constants/openings.json。キーはパターン名
 #   user: 01 の最初の発話に渡す指定。内容は縛らず、形だけを決める
-#   moshi: 最初の応答の応じ方。Moshi の仕様なので明確に決める。null なら通常どおり（02 から）
+#   moshi: 最初の応答の応じ方。Moshi の仕様なので明確に決める。null なら指定しない
+#   search: 最初の応答の前に 02 で検索の要否を判定するか。false なら検索せずに moshi の応じ方で返す
+#           （挨拶だけ・雑談など、答えるべき中身がまだ無いパターン）
 #   weight: 出現の重み
 OPENINGS: dict = load_constant("openings.json")
 
@@ -94,6 +96,22 @@ SPEAKER = {"user": "人", "moshi": "モシ"}
 def render_history(hist: list[tuple[str, str]]) -> str:
     # 会話はユーザから始まるので、最初の 01 では履歴が空
     return "\n".join(f"{SPEAKER[w]}: {t}" for w, t in hist) or "（まだ無い）"
+
+
+def parse_ref(out: str) -> tuple[str, list[str]]:
+    """02-2 の出力から（参照チャンク, 根拠）を取り出す。根拠は「記事」「知識」「推論」の部分集合。
+    根拠の行が無くても参照チャンクは使う（根拠は分析用の記録なので）。"""
+    ref, basis = "", []
+    for raw in out.splitlines():
+        line = raw.strip()
+        if not line:
+            continue
+        if line.startswith(("根拠:", "根拠：")):
+            v = line[3:]
+            basis = [b for b in ("記事", "知識", "推論") if b in v]
+        elif not ref:
+            ref = strip_label(line, "参照チャンク", "参照")
+    return ref, basis
 
 
 def parse_need(out: str) -> str:
@@ -166,9 +184,11 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         turn = {"user": u}
 
         # ---- 02 検索の要否：会話履歴・知識の範囲 --------------------------------------
-        # 挨拶だけ・雑談で始まった最初の応答は、決まった応じ方で返し、検索しない
-        rule = OPENINGS[opening]["moshi"] if k == 0 else None
-        if rule:
+        # 最初の応答は話し始めのパターンの応じ方に従う。search が false のパターン（挨拶だけ・雑談など）は
+        # 答えるべき中身がまだ無いので検索しない。true のパターン（質問など）は 02 で判定してから応じ方を渡す
+        op = OPENINGS[opening] if k == 0 else {}
+        rule = op.get("moshi")
+        if rule and not op.get("search", False):
             turn.update(need=False, need_raw=f"（最初の応答・{opening}：検索しない）", reply_rule=rule)
         else:
             need_raw = call(client, model, need_sys,
@@ -178,8 +198,11 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             turn["need_raw"] = need_raw
             if verdict == "聞き返し":   # 検索せず、何のことかを聞き返す
                 turn.update(clarify=True, reply_rule=CLARIFY_RULE)
+            elif rule:
+                turn["reply_rule"] = rule
 
         lead = ref = ""
+        basis: list[str] = []
         if turn["need"]:
             # ---- 02-1 lead：会話履歴・ペルソナ ----------------------------------------
             lead = first_line(call(client, model, lead_sys,
@@ -187,10 +210,9 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
                                    args.effort_lead))
             lead = strip_label(lead, "前置き", "モシ")
             # ---- 02-2 参照チャンク：直前のユーザ発話までの会話履歴・記事（lead は見せない）------
-            ref = first_line(call(client, model, REF_ROLE,
-                                  f"{ref_head}会話:\n{render_history(hist)}\n参照チャンク:",
-                                  args.effort_ref))
-            ref = strip_label(ref, "参照チャンク", "参照")
+            ref, basis = parse_ref(call(client, model, REF_ROLE,
+                                        f"{ref_head}会話:\n{render_history(hist)}\n参照チャンク:",
+                                        args.effort_ref))
             if not lead or not ref:
                 raise RuntimeError("lead か参照チャンクが空")
 
@@ -205,7 +227,8 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         body = strip_label(body, "続き", "モシ")
         if not body:
             raise RuntimeError("モシの応答が空")
-        turn.update(lead=lead, reference=ref, body=body, ref_has_unknown="不明" in ref)
+        turn.update(lead=lead, reference=ref, body=body, ref_has_unknown="不明" in ref,
+                    ref_basis=basis)
         turns.append(turn)
         hist.append(("moshi", lead + body))
 

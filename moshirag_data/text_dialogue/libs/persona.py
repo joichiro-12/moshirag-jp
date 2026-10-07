@@ -41,7 +41,8 @@ MOSHI_KNOWLEDGE: str = "\n".join(f"- {x}" for x in _MOSHI["知識の範囲"])
 #   constants/user_persona.json・constants/user_goals.json
 # ======================================================================================
 _USER = load_constant("user_persona.json")
-AGES: list = _USER["年齢層"]
+# 年齢層 → 出現の重み weight（日本の人口。出典は user_persona.json の "_年齢層の重みの出典"）
+AGES: dict = _USER["年齢層"]
 GENDERS: list = _USER["性別"]
 # 年齢層と矛盾しない職業だけを選ぶ。年齢層ごとの指定が無ければ「その他の年齢層」から選ぶ
 JOBS: dict = _USER["職業"]["年齢層ごと"]
@@ -53,7 +54,7 @@ USER_GOALS: dict = load_constant("user_goals.json")
 
 
 def sample_persona(rng: random.Random) -> dict:
-    age = rng.choice(AGES)
+    age = rng.choices(list(AGES), weights=[AGES[a]["weight"] for a in AGES])[0]
     return {"年齢層": age, "性別": rng.choice(GENDERS),
             "職業": rng.choice(JOBS.get(age, JOBS_DEFAULT)), "前提知識": rng.choice(KNOWLEDGE)}
 
