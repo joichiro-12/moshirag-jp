@@ -1,26 +1,8 @@
-"""TTS のモデルを 1 回だけ読み込み、担当分の会話をまとめて音声化する。
+"""FireRedTTS2 を 1 回だけ読み込み、担当分の台本をまとめて音声化する。
 
-## なぜ必要か
-
-既存の `synth_shard.pbs` は会話 1 本ごとに `uv run zoom1-dialogue-tts` を起動する。
-`synthesize()` は内部で毎回 `FireRedTTS2(...)` を作るので、**会話ごとにモデル読み込みが
-走っている**。実測は 100 秒/会話で、うちどれだけが読み込みかは未測定である。
-
-音声化は工程全体の律速で、会話生成の 10.4 倍の GPU 時間を使う。ここを詰めると
-全体の見通しが変わる。
-
-## やり方
-
-TTS パッケージは git 管理外なので**本体は書き換えない**。
-`fireredtts2.fireredtts2.FireRedTTS2` をキャッシュ付きに差し替えることで、
-`synthesize()` を無改造のまま呼び、2 回目以降の読み込みを省く。
-`synthesis.py` は関数内で import しているため、モジュール属性の差し替えが効く。
-
-## 確認していないこと
-
-**モデルを使い回したときに会話間で状態が漏れないか。** 漏れると出力が変わる。
-`--verify` は既存の wav と再合成結果を突き合わせてこれを確かめる。
-乱数種は `synthesize()` 内で会話ごとに再設定される（`torch.manual_seed(timing.seed)`）。
+TTS 本体は書き換えず、FireRedTTS2 をキャッシュ付きに差し替えて読み込みを省く。
+--verify で既存の wav と再合成結果を突き合わせ、会話間で状態が漏れないかを確かめる。
+担当の割り方は --in_dir + --shard/--nshard（固定）か、--pool_dir + --claim_dir（取り出し）。
 """
 from __future__ import annotations
 import argparse, hashlib, os, sys, time

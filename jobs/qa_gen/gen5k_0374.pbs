@@ -23,7 +23,7 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; PORT=8000; NAME=llm-jp-4-32b-a3b-thinking
-SCRIPT=moshirag_data/s02_dialogue.py
+SCRIPT=moshirag_data/text_dialogue/s02_dialogue.py
 OUT=data/moshirag_jp/pilot5k
 
 echo "===== $(date) $(hostname) ====="

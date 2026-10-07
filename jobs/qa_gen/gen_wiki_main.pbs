@@ -1,8 +1,8 @@
 #!/bin/bash
-# Wikipedia 由来 QA から会話を生成する（本番）。
+# s01 のシナリオから会話を生成する（本番）。
 #
-#   # QA の 8 シャードを結合してから投げる（02e は --input_file を 1 つだけ受け取る）
-#   cat data/japanese_kame/qa_pairs/wiki_qa.s*of008.jsonl > data/japanese_kame/qa_pairs/wiki_qa.jsonl
+#   # シナリオの 8 シャードを結合してから投げる（s02 は --input_file を 1 つだけ受け取る）
+#   cat data/japanese_kame/qa_pairs/wiki_scenario.s*of008.jsonl > data/japanese_kame/qa_pairs/wiki_scenario.jsonl
 #   for s in $(seq 0 15); do qsub -P gcg51557 -v SHARD=$s,NSHARD=16 jobs/qa_gen/gen_wiki_main.pbs; done
 #
 # ## 規模
@@ -12,12 +12,13 @@
 # 10/10 までに音声化を終えるにはこれ以上は間に合わないと考えている。
 # QA は約 19.7 万件あるので、必要になれば NUM を上げるだけで増やせる。
 #
-# ## JaQuAD 側と揃えている条件
+# ## 会話の長さ
 #
-# --min_turns 3 --max_turns 5、effort の各設定、--seed 1。
-# 揃えないと、JaQuAD 由来と Wikipedia 由来の差が入力の差なのか条件の差なのか分離できない。
+# 会話の長さはユーザ役の EOC（ユーザの目的で決まる）に任せる。--max_turns 8 は打ち切りの上限。
+# 2026-10-06 にシナリオ方式へ変えたので、JaQuAD 由来（pilot5k/）とは生成条件が揃っていない。
 #
-# 出力は JaQuAD 由来（pilot5k/）と分けて wiki_main/ に置く。stem は wiki_qa_NNNNNN になる。
+# 出力は JaQuAD 由来（pilot5k/）と分けて wiki_main/ に置く。stem は wiki_scenario_NNNNNN になる
+# （QA 方式の wiki_qa_NNNNNN とは名前が重ならない）。
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
@@ -46,11 +47,12 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; NAME=llm-jp-4-32b-a3b-thinking
-SCRIPT=moshirag_data/s02_dialogue.py
-IN=data/japanese_kame/qa_pairs/wiki_qa.jsonl
+SCRIPT=moshirag_data/text_dialogue/s02_dialogue.py
+IN=data/japanese_kame/qa_pairs/wiki_scenario.jsonl
+WIKI=/groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki
 OUT=data/moshirag_jp/wiki_main
 
-[ -s "$IN" ] || { echo "!! $IN が無い。QA の 8 シャードを結合してから投げる"; exit 1; }
+[ -s "$IN" ] || { echo "!! $IN が無い。シナリオの 8 シャードを結合してから投げる"; exit 1; }
 
 echo "===== $(date) $(hostname) シャード ${SHARD}/${NSHARD} ====="
 git rev-parse --short HEAD; git status --porcelain | grep -v '^??' | wc -l
@@ -72,12 +74,12 @@ done
 
 S=$(date +%s)
 $VENV/bin/python "$SCRIPT" \
-    --input_file "$IN" --output_dir "$OUT" --num_samples "$NUM" --seed 1 \
+    --input_file "$IN" --wiki_dir "$WIKI" --output_dir "$OUT" --num_samples "$NUM" --seed 1 \
     --shard "$SHARD" --nshard "$NSHARD" \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" \
-    --min_turns 3 --max_turns 5 --workers 32 \
-    --effort_human high --effort_assistant low --effort_chunk low \
-    --effort_judge low --effort_lead low --resume 2>&1 | tail -20
+    --min_turns 1 --max_turns 8 --workers 32 \
+    --effort_user high --effort_need low --effort_lead low \
+    --effort_ref low --effort_body low --resume 2>&1 | tail -20
 E=$(date +%s)
 
 echo "===== 終了 $(date) ====="

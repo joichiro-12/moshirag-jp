@@ -1,19 +1,10 @@
-"""行指向レコード → 音声合成の入力一式（台本 / dialogue JSON / 構造注釈）。
+"""会話記録から、音声合成の入力一式を作る。
 
-MoshiRAG-JP の会話レコードから、工程 3 以降で必要になる 3 つを作る。
+  <stem>.txt          FireRedTTS2 の台本（[S1]=人間 / [S2]=moshi）
+  <stem>.json         dialogue JSON [{"speaker": "A"|"B", "text": ...}]（A=人間 / B=moshi）
+  <stem>.struct.json  lead/body の turn index と参照文（s06 で使う）
 
-  <stem>.txt        FireRedTTS2 の台本（[S1]=人間 / [S2]=moshi）
-  <stem>.json       04_word_alignment.py 用の dialogue JSON
-                    [{"speaker": "A"|"B", "text": ...}, ...]  A=人間(L) / B=moshi(R)
-  <stem>.struct.json  lead/body/tail の境界と参照文書。<ret> 配置に使う
-
-台本では lead / body / tail を **別ターン**として出す。同一話者の連続ターンは
-butt-join されるため音声は連続した一発話になり、かつ合成 manifest から各部の onset が
-真値として取れる。struct.json はその turn index を保持し、08 側が manifest と突き合わせて
-<ret> のフレーム位置と d_lead を求める。
-
-以前は 1 ターンに結合し、境界を forced alignment で推定していた。B チャネルは 6 割以上が
-無音のため stable-ts が破綻し、真値より 34 秒ずれた（d_lead が最大 43.68 秒になった）。
+lead / body は別ターンとして出し、manifest から各部の onset を真値で取れるようにする。
 """
 
 from __future__ import annotations
@@ -38,12 +29,12 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
                 turns.append({"speaker": "B", "text": pending["body"]})
             pending = None
             return
-        # lead / body / tail を **別ターン**として台本に出す。同一話者の連続ターンは
+        # lead / body を **別ターン**として台本に出す。同一話者の連続ターンは
         # butt-join されるので音声は連続した一発話になり、かつ合成 manifest から
         # 各部の onset が真値として取れる。以前は 1 ターンに結合していたため境界を
         # forced alignment で推定する必要があり、長い無音を含むチャネルで破綻した。
         idx = {}
-        for key in ("lead", "body", "tail"):
+        for key in ("lead", "body"):
             if pending[key]:
                 turns.append({"speaker": "B", "text": pending[key]})
                 idx[key] = len(turns) - 1
@@ -51,10 +42,8 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
             struct.append({
                 "lead_turn_index": idx["lead"],
                 "body_turn_index": idx["body"],
-                "tail_turn_index": idx.get("tail"),
                 "lead": pending["lead"],
                 "body": pending["body"],
-                "tail": pending["tail"],
                 "reference": pending["reference"],
             })
         pending = None
@@ -63,10 +52,10 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
         line = line.rstrip("\n")
         if line == "(augmented)":
             flush()
-            pending = {"augmented": True, "lead": "", "body": "", "tail": "", "reference": ""}
+            pending = {"augmented": True, "lead": "", "body": "", "reference": ""}
         elif line == "(unaugmented)":
             flush()
-            pending = {"augmented": False, "lead": "", "body": "", "tail": "", "reference": ""}
+            pending = {"augmented": False, "lead": "", "body": "", "reference": ""}
         elif line.startswith("Human:"):
             flush()
             turns.append({"speaker": "A", "text": line[len("Human:"):].strip()})
@@ -79,10 +68,6 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
         elif line.startswith("moshi (body):"):
             if pending is not None:
                 pending["body"] = line.split(":", 1)[1].strip()
-        elif line.startswith("moshi (tail):"):
-            if pending is not None:
-                t = line.split(":", 1)[1].strip()
-                pending["tail"] = "" if t == "[empty]" else t
         elif line.startswith("moshi:"):
             if pending is not None:
                 pending["body"] = line.split(":", 1)[1].strip()

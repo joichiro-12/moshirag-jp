@@ -1,88 +1,79 @@
-# moshirag_data/：日本語 MoshiRAG の学習データを作るスクリプト
+# moshirag_data/
 
-## このリポジトリと、このフォルダの役割
+日本語 MoshiRAG の学習データを、日本語 Wikipedia の記事から作るスクリプト。
 
-このリポジトリは、**日本語の MoshiRAG を作るための作業リポジトリ**である（LLM-jp 対話グループ、実験番号 0374）。
-音声対話モデル KAME の学習コードを土台にしているので、ルートの README・`finetune.py`・`kame_jp/` などは KAME のものである。
+## 工程
 
-**MoshiRAG**（Chien ら, arXiv:2604.12928）は、全二重の音声対話モデル Moshi に検索を組み込んだ構成である。
-モデルは、知識が要る質問を受けると、まず「えーと、〇〇ですね」のような前置き（lead）を話し始める。
-同時に特別なトークン `<ret>` を出して検索を起動し、検索で得た文書（参照）を、圧縮したベクトルとして受け取る。
-前置きを話しているあいだに参照が届くので、そのあとの本題（body）を参照に基づいて答えられる。
+```
+text_dialogue/     テキストの会話を作る
+  s01  記事 → シナリオ（ユーザのペルソナ・目的・動機）
+  s02  シナリオ → 会話（ユーザ発話 → 検索の要否 → lead・参照チャンク → 応答 を繰り返す）
+  s03  会話 → TTS の台本と、lead・body の位置
 
-このフォルダは、その学習に要るデータを作る。1 件のデータは、次の 3 つがそろった 2 話者の会話である。
+speech_dialogue/   音声にする
+  s04  台本 → 2 話者のステレオ音声
+  s05  音声 → 語ごとの時刻（MFA）
 
-- 会話の音声（左が利用者役、右が Moshi 役のステレオ）
-- どの時刻に `<ret>` を出すか
-- そのとき読む参照の文
+postprocess/       学習用の形にする
+  s06  <ret> を置くフレームと lead の長さ
+  s07  音声トークン（Mimi）
+  s08  テキストトークン
+  s09  参照チャンクのベクトル（ARC-Encoder）
+  s10  parquet にまとめる
 
-これを、問いと答えの組（QA）から 10 の工程（s01〜s10）を経て作る。
+dev/               開発用
+  run_local.py       記事の束を s01〜s10 まで手元で通す
+  check_dialogue.py  s02 の会話を LLM で検査し、不合格を rejected/ に移す（事後検査）
+  walkthrough.ipynb  1 件ずつ中身を見ながら通す
+```
 
 ## 用語
 
 | 用語 | 意味 |
 | --- | --- |
-| 会話 | 利用者役と Moshi 役の 1 回の対話（10〜14 ターン、約 1 分半）。データの単位で、`wiki_qa_012345` のような ID を持つ |
-| lead / body / tail | 検索が要る応答の 3 つの部分。前置き・本題・締め（tail は空のことが多い） |
-| `<ret>` | 検索を起動する特別なトークン。lead の最初のテキストトークンの直前に置く |
-| 参照 | 検索で得たという想定の文書。学習データでは LLM が QA から作る |
-| augmented / unaugmented | 参照を使って答えるターン／使わないターン |
-| 台本 | TTS に渡す、話者つきの発話の並び（`[S1]…` `[S2]…`） |
-| manifest | 音声化の結果。各ターンが何秒から何秒までかを記録した JSON |
-| 語アライメント | 音声のどこでどの語が話されたかを求めること（MFA を使う） |
+| lead / body | 検索する応答の前置き／本題 |
+| `<ret>` | 検索を起動するトークン。lead の直前に置く |
+| 参照チャンク | 検索で得た想定の文書。s02 で LLM が記事・知識・推論から作る |
+| シナリオ | ユーザ役のペルソナ・目的（user goal）・会話の動機 |
+| EOC | ユーザ役が会話を終えるときの印 |
 
-## 1 つの会話がどう変わっていくか
+## 動かし方
+
+- **1 件ずつ中身を見る**：`dev/walkthrough.ipynb`
+- **記事の束をまとめて処理**：`dev/run_local.py`
 
 ```
-s01  QA            {"question": "日本の実業家で、ウェザーニューズを創業した人は誰ですか", "answer": "石橋博良"}
-s02  会話の記録     QA から参照の文 3 本と会話を作り、各ターンが参照を使うか（augmented か）を判定し、lead を書く
-s03  台本           会話の記録を TTS の台本と構造 JSON（lead・body の位置と参照の文）に分ける
-s04  音声           台本を 2 話者のステレオ音声にする（ターンごとの音声と manifest も残る）
-s05  語の時刻       ターンごとの音声で語アライメントをして、会話全体の時間軸に並べる
-s06  <ret> の位置   manifest と構造 JSON から、<ret> を置くフレームと lead の長さを求める
-s07  音声トークン    会話の音声を Mimi で離散トークンにする（12.5 Hz、8 コードブック）
-s08  テキストトークン 語の時刻から、12.5 Hz のテキストの並びを作る
-s09  参照のベクトル  参照の文を ARC-Encoder で符号化する
-s10  parquet        s06〜s09 をまとめて学習用の parquet にする
+python moshirag_data/dev/run_local.py --input <記事の JSON> --work <作業場所> --steps s01-s03  # テキストまで
+python moshirag_data/dev/run_local.py --input <記事の JSON> --work <作業場所>                  # 全工程
 ```
 
-## 工程の一覧
+## 必要な環境
 
-| 工程 | ファイル | 使う出力 | 出力 | Python の環境 | 投げ方 |
-| --- | --- | --- | --- | --- | --- |
-| s01a | `s01a_jaquad_qa.py` | （Hugging Face の JaQuAD） | `data/japanese_kame/qa_pairs/jaquad.jsonl` | uv（`--extra data`） | 手で実行（`--sources jaquad`） |
-| s01b | `s01b_wiki_candidates.py` | （日本語 Wikipedia。パスは固定） | `wiki_candidates.jsonl` | 標準ライブラリだけ | 手で実行 |
-| s01c | `s01c_wiki_qa.py` | s01b | `wiki_qa.sNNNofNNN.jsonl` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/wikiqa_main.pbs` |
-| s02 | `s02_dialogue.py` | s01 | `data/moshirag_jp/<名前>/<会話>.{json,txt}` | vLLM 用 venv＋vLLM サーバ | `jobs/qa_gen/gen_wiki_main.pbs` |
-| s02b | `s02b_rebuild_references.py` | s02 | 別のフォルダ（例：`pilot5k_fixed`） | 標準ライブラリだけ | 手で実行。旧版の不具合の修正用（JaQuAD 分に 1 回適用済み） |
-| s03 | `s03_tts_input.py` | s02 | `<会話>.{txt,json,struct.json}` | 標準ライブラリだけ | 手で実行 |
-| s04 | `s04_synth.py` | s03 の台本 | `<会話>.wav`・`.manifest.json`・`_turns/` | TTS（zoom1-tts）の venv | ABCI：`jobs/synth/synth_resv.pbs`／研究室：`tools/lab/launch_pool.sh` |
-| s05 | `s05_align.py` | s04 | `words/<会話>.json` | MFA の conda 環境 | 研究室：`tools/lab/batch_align.sh` |
-| s06 | `s06_ret.py` | s03 の構造 JSON・s04 の manifest | `<会話>.json` | 標準ライブラリだけ | 手で実行 |
-| s07 | `s07_tok_audio.py` | s04 の会話の音声 | `<会話>.npz` | uv＋GPU | `jobs/post/stage5a_audio.pbs`／研究室：`tools/lab/batch_tokenize.sh` |
-| s08 | `s08_tok_text.py` | s05 | `<会話>.npz` | uv | `jobs/post/stage5b_text.pbs` |
-| s09 | `s09_ref_embed.py` | s06 | `<会話>.npz` | uv＋GPU（約 14 GB） | `jobs/post/stage5c.pbs` |
-| s10 | `s10_pack.py` | s06〜s09 | `*.parquet`（分割） | uv | `jobs/post/stage6_prep.pbs` |
+| 工程 | 環境 |
+| --- | --- |
+| s01・s02 | OpenAI 互換の LLM（API か vLLM）。API のときは `moshirag_data/.env` に `OPENAI_API_KEY` |
+| s04 | FireRedTTS2 |
+| s05 | Montreal Forced Aligner（日本語モデル） |
+| s07・s09 | PyTorch と GPU |
+| s03・s06・s08・s10 | リポジトリの Python 環境 |
 
-- s07・s08 の実装は `tools/tokenize_audio.py`・`tools/tokenize_text.py` にある（KAME と共有しているため）。ここにあるのは入口だけ
-- 工程ごとに Python の環境が違うので、全工程をまとめて呼ぶ入口は作っていない
-- PBS はリポジトリのルートで `qsub jobs/…/x.pbs` と投げる。出力は `logs/<ジョブ番号>.pbs1.OU` に出る
-- 研究室サーバには s04 を `~/moshirag_tts/synth_worker.py`、s05 を `~/moshirag_mfa/mfa_align.py` という名前で写してある
+外部環境の置き場所は `dev/run_local.py` の冒頭で指定する。
 
-## もう一度流したときの振る舞い（2026-10-04 時点）
+## 会話の作り方を変えるとき
 
-会話は何万件もあり、何日にも分けて作る。そのため、途中で止まっても続きから流せることと、
-どのコードで作ったかを後からたどれることが要る。いまの実装がどうなっているかを表にした。**そろえるのはこれからである。**
+コードではなく、次のファイルを編集する（`text_dialogue/` の下）。
 
-| 工程 | 出力の単位 | もう一度流したとき | どのコードで作ったかの記録 |
-| --- | --- | --- | --- |
-| s01a・s01b | 1 本の jsonl | 全部作り直す | 無い |
-| s01c | シャードごとの jsonl に追記 | 出力済みの記事は飛ばす | PBS の出力にだけ残る |
-| s02 | 会話ごと | `--resume` で出力済みを飛ばす | 各会話の JSON に `code_commit` |
-| s02b・s03・s06 | 会話ごと | 全部作り直す | s02 の `code_commit` を写すだけ |
-| s04 | 会話ごと | 音声がある会話は飛ばす | ABCI の PBS の出力にだけ残る |
-| s05 | 会話ごと | 本体は全部作り直す。`batch_align.sh` が語の時刻の無い会話だけを渡す | ABCI の PBS の出力にだけ残る |
-| s07・s08・s09 | 会話ごと | 出力済みを飛ばす（s07・s08 は `--resume`） | 無い |
-| s10 | parquet の分割 | 全部作り直す | 無い |
+| 場所 | 中身 |
+| --- | --- |
+| `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`） |
+| `constants/moshi_persona.json` | Moshi のペルソナ |
+| `constants/user_persona.json` | ユーザのペルソナの候補と、年齢層の重み |
+| `constants/user_goals.json` | ユーザの目的と終了条件 |
+| `constants/openings.json` | 話し始めのパターンと、Moshi の最初の応じ方 |
+| `constants/fillers.json` | lead で使うフィラー |
+| `constants/spoken_style.json` | 発話の書き方 |
+| `constants/moshi_reply_rules.json` | 聞き返しなどの応じ方 |
 
-旧パス（`scripts/japanese_kame/02e_generate_moshirag_v5.py` など）から移した対応は `docs/file_moves_20261004.tsv` にある。
+事後検査の基準は `dev/prompts/04_check.txt` にある。
+
+プロンプトの `{persona}` などは穴埋めの場所なので消さない。

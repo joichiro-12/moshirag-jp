@@ -1,32 +1,9 @@
-"""語アライメント（工程 ⑥）。TTS の manifest から MFA のコーパスを作り、揃えて、会話単位の語 JSON にまとめる。
+"""TTS の manifest から MFA で語アライメントを取り、会話単位の語 JSON にする。
 
-## 何をするか
+揃わないターンは広いビームで 1 回だけやり直し、それでも残った会話は <words_dir>_excluded に書く。
+書き起こしは分かち書きせず素のテキストで渡す（分かち書きすると全音素が spn になる）。
 
-g21 で 5,000 会話に使った 3 つの手順を 1 本にまとめたもの。
-
-  - /mnt/kiso-qnap/jsato/mfa_full/prep_full.py   コーパスの整形
-  - mfa align（~/Documents/MFA/command_history.yaml に残っている引数）
-  - ~/mfa_to_words.py                             会話単位の語 JSON への変換
-
-出力形式は mfa_to_words.py と同じ（tools/tokenize_text.py がそのまま読む）。
-
-    [{"speaker": "A", "word": "こんにちは", "start": 0.46, "end": 1.02, "turn_index": 1}, ...]
-
-## 5,000 会話のときから変えた点
-
-  - 入出力のパスを引数にした
-  - 再実行を「取りこぼしたターンだけを広いビーム（beam 100 / retry_beam 400）で 1 回」にまとめた。
-    5,000 会話のときは、既定ビームでの再実行（-j 8）を 1 回挟んでから広いビームで再実行していた
-  - コーパスの wav は複製せずシンボリックリンクにした（ABCI では音声とコーパスの置き場所が別のため）
-  - 揃わないターンが残った会話は <words_dir>_excluded に書く。基準は「1 ターンでも揃わなければ除外」で、
-    5,000 会話のときと同じ（除外のスクリプトは残っていないが、全数で確かめた：除外 56 会話はすべて
-    取りこぼしあり、採用 4,862 会話で取りこぼしのあるものは 0 件）
-
-## 書き起こしの渡し方（prep_full.py の注意書きをそのまま残す）
-
-書き起こしは素のテキストを渡す（分かち書きしない）。japanese_mfa 辞書は MFA 内部の SudachiPy が
-分割する前提で、自前で分かち書きすると発話全体が 1 語として扱われ、音素が spn（未知）になって
-アライメントが行われない。表示は「完了」と出るので注意。
+Output: [{"speaker": "A", "word": "こんにちは", "start": 0.46, "end": 1.02, "turn_index": 1}, ...]
 """
 from __future__ import annotations
 import argparse, json, os, re, shutil, subprocess, sys, time
