@@ -9,7 +9,6 @@
 # RAG の学習データとして有利だという直接の証拠になる。
 #
 # 2026-10-06 にシナリオ方式へ変えたので、生成条件は JaQuAD 側と揃っていない。
-# 04 事後検査で不合格の会話は $OUT/rejected/ に置かれ、下の割合には入らない。
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
@@ -62,11 +61,11 @@ $VENV/bin/python "$SCRIPT" \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" \
     --min_turns 1 --max_turns 8 --workers 32 \
     --effort_user high --effort_need low --effort_lead low \
-    --effort_ref low --effort_body low --effort_check low --resume 2>&1 | tail -20
+    --effort_ref low --effort_body low --resume 2>&1 | tail -20
 E=$(date +%s)
 
 echo "===== 終了 $(date) ====="
-echo "経過 $((E-S)) 秒 / 合格 $(ls "$OUT"/*.json 2>/dev/null | wc -l) 件 / 不合格 $(ls "$OUT"/rejected/*.json 2>/dev/null | wc -l) 件"
+echo "経過 $((E-S)) 秒 / 生成 $(ls "$OUT"/*.json 2>/dev/null | wc -l) 件"
 
 echo "--- <ret> を持つ会話の割合 ---"
 python3 -c "

@@ -83,8 +83,6 @@ REF_ROLE = load_prompt("02-2_ref.txt")
 # ---- 03 body / 応答 -----------------------------------------------------------------
 BODY_ROLE = load_prompt("03_body.txt")
 
-# ---- 04 事後検査 --------------------------------------------------------------------
-CHECK_ROLE = load_prompt("04_check.txt")
 
 
 # ======================================================================================
@@ -121,30 +119,6 @@ def parse_need(out: str) -> str:
         if v in s:
             return v
     raise RuntimeError(f"検索の要否を解釈できない: {out[:60]}")
-
-
-def parse_check(out: str) -> bool:
-    s = first_line(out)
-    if "不合格" in s:
-        return False
-    if "合格" in s:
-        return True
-    raise RuntimeError(f"事後検査の結果を解釈できない: {out[:60]}")
-
-
-def render_script(turns: list[dict]) -> str:
-    """04 に渡す台本。検索したターンには前置き・本題の区切りと参照チャンクを付ける。"""
-    lines = []
-    for t in turns:
-        lines.append(f"人: {t['user']}")
-        if t.get("body") is None:
-            continue
-        if t["need"]:
-            lines.append(f"モシ: ［前置き］{t['lead']}［本題］{t['body']}")
-            lines.append(f"　［参照チャンク］{t['reference']}")
-        else:
-            lines.append(f"モシ: {t['body']}")
-    return "\n".join(lines)
 
 
 def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
@@ -232,12 +206,6 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         turns.append(turn)
         hist.append(("moshi", lead + body))
 
-    # ---- 04 事後検査：台本全体 ----------------------------------------------------------
-    script = render_script(turns)
-    check_raw = call(client, model, CHECK_ROLE.format(persona=MOSHI_PERSONA),
-                     f"台本:\n{script}\n\n検査:", args.effort_check)
-    passed = parse_check(check_raw)
-
     # ---- s03 が読む形式に組み立てる ----------------------------------------------------
     record = []
     for t in turns:
@@ -263,7 +231,6 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "article_chars": len(article),
         "chunks": [t["reference"] for t in turns if t.get("need")],   # s03 が struct.json に写す
         "turns": turns,
-        "check": {"passed": passed, "raw": check_raw},
         "record": record,
         "n_user_turns": len(turns),
         "n_augmented": sum(1 for t in turns if t.get("need")),
@@ -281,8 +248,10 @@ def main(args) -> None:
     client = OpenAI(api_key=args.api_key or os.getenv("OPENAI_API_KEY") or "dummy",
                     base_url=args.llm_base_url or None)
     out = Path(args.output_dir)
-    rej = out / "rejected"   # 04 で不合格の会話。s03 は output_dir 直下しか読まない
-    rej.mkdir(parents=True, exist_ok=True)
+    out.mkdir(parents=True, exist_ok=True)
+    # 開発用の事後検査（dev/check_dialogue.py）で不合格になった会話の置き場。
+    # 再開のときは、ここにある会話も作成済みとして飛ばす（作り直して LLM を呼び直さないため）
+    rej = out / "rejected"
 
     with Path(args.input_file).open(encoding="utf-8") as f:
         rows = [json.loads(l) for l in f if l.strip()]
@@ -314,10 +283,6 @@ def main(args) -> None:
             try:
                 conv = generate(sc, article, opening, client, args.model, args)
                 conv["stem"] = stem
-                if not conv["check"]["passed"]:
-                    (rej / f"{stem}.json").write_text(
-                        json.dumps(conv, ensure_ascii=False, indent=2), encoding="utf-8")
-                    return stem, f"reject turns={conv['n_user_turns']}"
                 pj.write_text(json.dumps(conv, ensure_ascii=False, indent=2), encoding="utf-8")
                 pt.write_text("\n".join(conv["record"]) + "\n", encoding="utf-8")
                 return stem, (f"ok turns={conv['n_user_turns']} aug={conv['n_augmented']} clarify={conv['n_clarify']} "
@@ -327,7 +292,7 @@ def main(args) -> None:
                     return stem, f"FAIL {e}"
         return stem, "FAIL"
 
-    n = {"ok": 0, "reject": 0, "skip": 0, "FAIL": 0}
+    n = {"ok": 0, "skip": 0, "FAIL": 0}
     with ThreadPoolExecutor(max_workers=args.workers) as ex:
         futs = [ex.submit(work, i, sc) for i, sc in targets]
         for fu in as_completed(futs):
@@ -335,7 +300,7 @@ def main(args) -> None:
             n[msg.split()[0]] += 1
             with _print_lock:
                 print(f"[{msg.split()[0]}] {stem} {msg}", flush=True)
-    print(f"\nDone: 合格 {n['ok']} / 不合格 {n['reject']} / 既存 {n['skip']} / 失敗 {n['FAIL']}"
+    print(f"\nDone: 作成 {n['ok']} / 既存 {n['skip']} / 失敗 {n['FAIL']}"
           f" -> {out}")
 
 
@@ -364,7 +329,6 @@ def build_parser():
     p.add_argument("--effort_lead", default="low")
     p.add_argument("--effort_ref", default="low")
     p.add_argument("--effort_body", default="low")
-    p.add_argument("--effort_check", default="low")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--resume", action="store_true")
     return p

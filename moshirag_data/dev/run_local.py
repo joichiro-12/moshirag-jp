@@ -2,13 +2,13 @@
 
 Usage:
     # 何が流れるかだけを見る（何も呼ばない）
-    .venv/bin/python moshirag_data/run_local.py --input data/wiki_raw_sample100.json \\
+    .venv/bin/python moshirag_data/dev/run_local.py --input data/wiki_raw_sample100.json \\
         --work data/local_sample100 --dry_run
     # まず 5 件で s01〜s03 だけ
-    .venv/bin/python moshirag_data/run_local.py --input data/wiki_raw_sample100.json \\
+    .venv/bin/python moshirag_data/dev/run_local.py --input data/wiki_raw_sample100.json \\
         --work data/local_sample100 --limit 5 --steps s01-s03
     # 残り全部
-    .venv/bin/python moshirag_data/run_local.py --input data/wiki_raw_sample100.json \\
+    .venv/bin/python moshirag_data/dev/run_local.py --input data/wiki_raw_sample100.json \\
         --work data/local_sample100
 """
 from __future__ import annotations
@@ -28,8 +28,9 @@ from argparse import Namespace
 from pathlib import Path
 from unittest import mock
 
-REPO = Path(__file__).resolve().parent.parent
-sys.path[:0] = [str(REPO / "moshirag_data" / d) for d in ("text_dialogue", "speech_dialogue", "postprocess")] + [str(REPO)]
+REPO = Path(__file__).resolve().parents[2]
+sys.path[:0] = ([str(REPO / "moshirag_data" / d) for d in ("text_dialogue", "speech_dialogue", "postprocess", "dev")]
+                + [str(REPO)])
 
 from libs.persona import CONSTANTS_DIR, PROMPTS_DIR  # noqa: E402  （上の sys.path を足してから読む）
 
@@ -39,11 +40,12 @@ from libs.persona import CONSTANTS_DIR, PROMPTS_DIR  # noqa: E402  （上の sys
 # ======================================================================================
 # (model, tag) → 回数・トークン数・秒。tag はプロンプトのファイル名（"01_user" など）で、
 # system プロンプトの 1 行目を prompts/ の各ファイルの 1 行目と突き合わせて決める。
-# 思考の混入で s01・s02 が捨てて引き直した応答も、料金はかかっているので数える
+# 思考の混入で s01・s02 が捨てて引き直した応答も、呼び出しとして数える
 _FIELDS = ("calls", "errors", "prompt_tokens", "cached_tokens", "completion_tokens", "reasoning_tokens")
 _USAGE: dict = {}
 _USAGE_LOCK = threading.Lock()
-_TAGS = {p.read_text(encoding="utf-8").split("\n", 1)[0]: p.stem for p in PROMPTS_DIR.glob("*.txt")}
+_TAGS = {p.read_text(encoding="utf-8").split("\n", 1)[0]: p.stem
+         for d in (PROMPTS_DIR, Path(__file__).resolve().parent / "prompts") for p in d.glob("*.txt")}
 
 
 def _record(model: str, tag: str, r, seconds: float, error: bool = False) -> None:
@@ -90,47 +92,25 @@ def reset_usage() -> None:
         _USAGE.clear()
 
 
-def load_prices() -> dict:
-    """text_dialogue/constants/llm_prices.json の model → 単価。"_" で始まるキーは説明なので読み飛ばす。"""
-    f = CONSTANTS_DIR / "llm_prices.json"
-    if not f.exists():
-        return {}
-    return {k: v for k, v in json.loads(f.read_text(encoding="utf-8")).items() if not k.startswith("_")}
-
-
-def cost_usd(row: dict, price: dict | None) -> float | None:
-    """price は 100 万トークンあたりの USD：{"input": .., "cached_input": .., "output": ..}。
-    単価が分からなければ None（0 と区別するため）。cached_input が無ければ input で数える。"""
-    if not price or price.get("input") is None or price.get("output") is None:
-        return None
-    cached_price = price.get("cached_input")
-    if cached_price is None:
-        cached_price = price["input"]
-    uncached = row["prompt_tokens"] - row["cached_tokens"]
-    return round((uncached * price["input"] + row["cached_tokens"] * cached_price
-                  + row["completion_tokens"] * price["output"]) / 1e6, 4)
-
-
-def usage_rows(prices: dict) -> list[dict]:
+def usage_rows() -> list[dict]:
     with _USAGE_LOCK:
         rows = [{"model": m, "tag": t, **v} for (m, t), v in sorted(_USAGE.items())]
     for r in rows:
         r["seconds"] = round(r["seconds"], 1)
-        r["usd"] = cost_usd(r, prices.get(r["model"]))
     return rows
 
 
 def format_usage(rows: list[dict]) -> str:
     lines = []
     for r in rows:
-        usd = "単価未設定" if r["usd"] is None else f"${r['usd']:.4f}"
         lines.append(f"    {r['model']} {r['tag']:10s} {r['calls']:5d} 回（失敗 {r['errors']}）"
                      f" 入力 {r['prompt_tokens']:,}（キャッシュ {r['cached_tokens']:,}）"
                      f" 出力 {r['completion_tokens']:,}（思考 {r['reasoning_tokens']:,}）"
-                     f" {r['seconds']:.0f} 秒 {usd}")
+                     f" {r['seconds']:.0f} 秒")
     return "\n".join(lines)
 
-STEPS = ["s01", "s02", "s03", "s04", "s05", "s06", "s07", "s08", "s09", "s10"]
+# check は開発用の事後検査（dev/check_dialogue.py）。本番の工程には無い。--no_check で外せる
+STEPS = ["s01", "s02", "check", "s03", "s04", "s05", "s06", "s07", "s08", "s09", "s10"]
 FRAME_RATE = 12.5
 
 # 外部環境（walkthrough.ipynb のセル 2 と同じ）
@@ -205,6 +185,7 @@ def main() -> None:
     ap.add_argument("--work", required=True, help="作業場所。消さずに使い続ける")
     ap.add_argument("--limit", type=int, default=0, help="先頭 N 件の記事だけ使う（0 で全件）")
     ap.add_argument("--steps", default="all", help="流す工程。例：all / s01-s03 / s04-s10 / s06,s10")
+    ap.add_argument("--no_check", action="store_true", help="開発用の事後検査（check）を流さない")
     ap.add_argument("--summary_only", action="store_true",
                     help="工程は流さず、作業場所にある出力から summary.json だけを作り直す（LLM も呼ばない）")
     ap.add_argument("--dry_run", action="store_true", help="流す内容と LLM の呼び出し回数の見積もりだけを出す")
@@ -216,7 +197,7 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
 
-    steps = parse_steps(a.steps)
+    steps = [s for s in parse_steps(a.steps) if not (a.no_check and s == "check")]
     work = Path(a.work).resolve()
     logs = work / "logs"
     S01, S02, S03 = work / "s01", work / "s02", work / "s03"
@@ -237,11 +218,13 @@ def main() -> None:
 
     if a.dry_run:
         # s02 は 1 往復に 01・02・03 の 3 回（挨拶・雑談で始まる最初の往復は 02 を呼ばず 2 回）、
-        # 検索するときは 02-1・02-2 が足されて 5 回。EOC を出す 01 と、最後の 04 が 1 回ずつ。
-        # 最小は「挨拶 → 返事 → EOC → 04」の 4 回、最大は 8 往復すべて検索して 04 の 41 回
+        # 検索するときは 02-1・02-2 が足されて 5 回。最後に EOC を出す 01 が 1 回。
+        # 最小は「挨拶 → 返事 → EOC」の 3 回、最大は 8 往復すべて検索した 40 回。check は 1 会話 1 回
         print(f"  s01 の LLM 呼び出し：{len(records)} 回（記事ごとに 1 回。失敗しても引き直しは 3 回まで）")
-        print(f"  s02 の LLM 呼び出し：1 会話あたり 4〜41 回。{len(records)} 会話なら "
-              f"{len(records) * 4:,}〜{len(records) * 41:,} 回（失敗した会話は 3 回まで作り直す）")
+        print(f"  s02 の LLM 呼び出し：1 会話あたり 3〜40 回。{len(records)} 会話なら "
+              f"{len(records) * 3:,}〜{len(records) * 40:,} 回（失敗した会話は 3 回まで作り直す）")
+        if "check" in steps:
+            print(f"  check の LLM 呼び出し：{len(records)} 回（会話ごとに 1 回）")
         for s in steps:
             miss = [str(p) for p in NEEDS.get(s, []) if not p.exists()]
             print(f"  {s}: {'環境 OK' if not miss else '見つからない: ' + ', '.join(miss)}")
@@ -256,7 +239,7 @@ def main() -> None:
     work.mkdir(parents=True, exist_ok=True)
 
     llm_args = []
-    if set(steps) & {"s01", "s02"}:
+    if set(steps) & {"s01", "s02", "check"}:
         install_usage_meter()
         if a.llm_backend == "openai":
             load_env_file(REPO / "moshirag_data" / ".env")
@@ -275,7 +258,6 @@ def main() -> None:
         for r in records:
             w.write(json.dumps({"text": r["text"], "meta": r["meta"]}, ensure_ascii=False) + "\n")
 
-    prices = load_prices()
     t_all = time.time()
     run_id = time.strftime("%Y-%m-%dT%H:%M:%S")
     for s in steps:
@@ -301,10 +283,15 @@ def main() -> None:
                     "--num_samples", str(n_sc), "--seed", str(a.seed), *llm_args,
                     "--min_turns", "1", "--max_turns", "8", "--workers", str(a.llm_workers),
                     "--effort_user", "high", "--effort_need", "low", "--effort_lead", "low",
-                    "--effort_ref", "low", "--effort_body", "low", "--effort_check", "low", "--resume",
+                    "--effort_ref", "low", "--effort_body", "low", "--resume",
                 ]))
 
-            elif s == "s03":   # 会話 → 台本と構造 JSON（セル 20）。04 で不合格の会話は S02 直下に無いので来ない
+            elif s == "check":   # 開発用の事後検査。不合格は S02/rejected/ に移るので s03 に進まない
+                import check_dialogue
+                check_dialogue.main(check_dialogue.build_parser().parse_args([
+                    "--input_dir", str(S02), *llm_args, "--workers", str(a.llm_workers), "--effort", "low"]))
+
+            elif s == "s03":   # 会話 → 台本と構造 JSON（セル 20）
                 import s03_tts_input as s03
                 s03.main(Namespace(input_dir=str(S02), output_dir=str(S03), limit=0))
 
@@ -368,8 +355,8 @@ def main() -> None:
                     s10.main()
 
             ok = True
-        finally:   # 失敗した工程も、かかった時間と LLM の料金は残す
-            rec = log_step(work, run_id, s, ok, time.time() - t0, count_outputs(work, s) - before, prices)
+        finally:   # 失敗した工程も、かかった時間と LLM の使用量は残す
+            rec = log_step(work, run_id, s, ok, time.time() - t0, count_outputs(work, s) - before)
             print(f"  {s} の経過 {rec['seconds']:.0f} 秒 / できた {rec['items']} 件"
                   + (f" / 1 件あたり {rec['seconds_per_item']:.1f} 秒" if rec["seconds_per_item"] else ""), flush=True)
             if rec["llm"]:
@@ -393,6 +380,9 @@ def count_outputs(work: Path, step: str) -> int:
         return sum(1 for l in f.open(encoding="utf-8") if l.strip()) if f.exists() else 0
     if step == "s02":
         return len(stems_in(work / "s02", ".json")) + len(stems_in(work / "s02" / "rejected", ".json"))
+    if step == "check":
+        return sum("check" in json.loads(p.read_text(encoding="utf-8"))
+                   for d in (work / "s02", work / "s02" / "rejected") for p in d.glob("*.json"))
     if step == "s05":
         return len(stems_in(work / "s05_words", ".json")) + len(stems_in(Path(str(work / "s05_words") + "_excluded"), ".json"))
     if step == "s10":
@@ -408,8 +398,8 @@ def count_outputs(work: Path, step: str) -> int:
 
 STEP_COLUMNS = ["run_id", "step", "ok", "seconds", "items", "seconds_per_item",
                 "llm_calls", "llm_errors", "prompt_tokens", "cached_tokens", "completion_tokens",
-                "reasoning_tokens", "llm_seconds", "usd"]
-LLM_COLUMNS = ["run_id", "step", "model", "tag", *_FIELDS, "seconds", "usd"]
+                "reasoning_tokens", "llm_seconds"]
+LLM_COLUMNS = ["run_id", "step", "model", "tag", *_FIELDS, "seconds"]
 
 
 def append_csv(path: Path, columns: list[str], rows: list[dict]) -> None:
@@ -429,19 +419,16 @@ def read_csv(path: Path) -> list[dict]:
         return list(csv.DictReader(f))
 
 
-def log_step(work: Path, run_id: str, step: str, ok: bool, seconds: float, items: int, prices: dict) -> dict:
+def log_step(work: Path, run_id: str, step: str, ok: bool, seconds: float, items: int) -> dict:
     """1 工程の記録を step_log.csv（工程 1 行）と llm_usage.csv（工程 × プロンプト 1 行）に足す。
-    usd は書いた時点の単価で数える（単価が分からなければ空欄）。
     s03・s06・s10 は毎回全件を作り直すので、2 回目以降の「できた件数」は新しく増えた分だけになる。"""
-    rows = usage_rows(prices)
-    known = [r["usd"] for r in rows if r["usd"] is not None]
+    rows = usage_rows()
     rec = {"run_id": run_id, "step": step, "ok": ok, "seconds": round(seconds, 1), "items": items,
            "seconds_per_item": round(seconds / items, 2) if items > 0 else None,
            "llm_calls": sum(r["calls"] for r in rows), "llm_errors": sum(r["errors"] for r in rows),
            **{k: sum(r[k] for r in rows) for k in ("prompt_tokens", "cached_tokens", "completion_tokens",
                                                    "reasoning_tokens")},
-           "llm_seconds": round(sum(r["seconds"] for r in rows), 1),
-           "usd": round(sum(known), 4) if known and len(known) == len(rows) else None}
+           "llm_seconds": round(sum(r["seconds"] for r in rows), 1)}
     append_csv(work / "step_log.csv", STEP_COLUMNS, [rec])
     if rows:
         append_csv(work / "llm_usage.csv", LLM_COLUMNS, [{"run_id": run_id, "step": step, **r} for r in rows])
@@ -449,11 +436,10 @@ def log_step(work: Path, run_id: str, step: str, ok: bool, seconds: float, items
 
 
 def summarize_log(work: Path) -> dict:
-    """step_log.csv・llm_usage.csv の全実行を、工程ごと・プロンプトごとに合計する。料金は今の単価で数え直す。"""
+    """step_log.csv・llm_usage.csv の全実行を、工程ごと・プロンプトごとに合計する。"""
     recs = read_csv(work / "step_log.csv")
     if not recs:
         return {}
-    prices = load_prices()
     steps: dict = {}
     for r in recs:
         a = steps.setdefault(r["step"], {"実行回数": 0, "失敗": 0, "秒": 0.0, "できた件数": 0})
@@ -470,17 +456,10 @@ def summarize_log(work: Path) -> dict:
         for k in _FIELDS:
             a[k] += int(u[k])
         a["seconds"] += float(u["seconds"])
-    rows = []
-    for (m, t), a in sorted(usage.items()):
-        row = {"model": m, "tag": t, **a, "seconds": round(a["seconds"], 1)}
-        row["usd"] = cost_usd(row, prices.get(m))
-        rows.append(row)
-    known = [r["usd"] for r in rows if r["usd"] is not None]
+    rows = [{"model": m, "tag": t, **a, "seconds": round(a["seconds"], 1)} for (m, t), a in sorted(usage.items())]
     return {
         "工程ごと（全実行の合計）": {s: steps[s] for s in STEPS if s in steps},
         "LLM（全実行の合計、プロンプトごと）": rows,
-        "LLM の料金の合計（USD）": round(sum(known), 4) if known else None,
-        "料金が出ていない行": [f"{r['model']} {r['tag']}" for r in rows if r["usd"] is None],
     }
 
 
@@ -509,8 +488,10 @@ def summarize(work: Path) -> dict:
         "件数": {
             "記事": n_articles,
             "s01 シナリオ": sum(1 for l in sc_file.open(encoding="utf-8") if l.strip()) if sc_file.exists() else 0,
-            "s02 合格": len(convs),
-            "s02 不合格（04）": len(rejected),
+            "s02 会話（check で不合格になったものを除く）": len(convs),
+            "check 合格": sum(1 for c in convs if c.get("check", {}).get("passed")),
+            "check 不合格": len(rejected),
+            "check 未実施": sum(1 for c in convs if "check" not in c),
             "s03 台本": len(stems_in(work / "s03", ".struct.json")),
             "s04 音声": len(stems_in(work / "s04_audio", ".manifest.json")),
             "s05 語の時刻": len(stems_in(work / "s05_words", ".json")),
@@ -521,7 +502,7 @@ def summarize(work: Path) -> dict:
             "s09 参照チャンクのベクトル": len(stems_in(work / "s09_ref_embed", ".npz")),
             "s10 parquet の行": n_rows,
         },
-        "s02（合格した会話）": {
+        "s02（check で不合格になったものを除く会話）": {
             "ユーザの目的": dist(c["user_goal"] for c in convs),
             "話し始め": dist(c["opening"] for c in convs),
             "往復数の平均": round(st.mean(c["n_user_turns"] for c in convs), 2) if convs else None,
@@ -534,8 +515,8 @@ def summarize(work: Path) -> dict:
             "参照チャンクの根拠（記事・知識・推論の組み合わせ）": dist("・".join(t.get("ref_basis") or []) or "なし"
                                                        for t in aug),
         },
-        "s02 不合格の理由（04 の出力の全文、会話ごと）": {stem: c["check"]["raw"] for stem, c in rejected.items()},
-        "時間と料金": summarize_log(work),
+        "check 不合格の理由（全文、会話ごと）": {stem: c["check"]["raw"] for stem, c in rejected.items()},
+        "時間と LLM の使用量": summarize_log(work),
         "s06 d_lead（秒）": ({"件数": len(d_leads), "平均": round(st.mean(d_leads), 2),
                              "中央": round(st.median(d_leads), 2),
                              "2〜4 秒の割合": round(sum(2 <= d <= 4 for d in d_leads) / len(d_leads), 3)}

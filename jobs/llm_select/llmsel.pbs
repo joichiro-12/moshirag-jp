@@ -87,7 +87,7 @@ RUNS=()
 for i in "${UP[@]}"; do
     n=${NAMES[$i]}
     LLM_RAW_LOG="$OUT/$n/llm_raw.jsonl" \
-        $PY moshirag_data/run_local.py --input "$IN" --work "$OUT/$n" --limit "$LIMIT" --steps s01-s03 \
+        $PY moshirag_data/dev/run_local.py --input "$IN" --work "$OUT/$n" --limit "$LIMIT" --steps s01-s03 \
         --llm_backend vllm --llm_base_url "http://localhost:$((8500 + i))/v1" --llm_workers 32 --seed 1 \
         > "$OUT/run_$n.log" 2>&1 &
     RUNS+=($!)
@@ -105,8 +105,9 @@ try:
 except FileNotFoundError:
     print(f"  {n}: summary.json が無い"); sys.exit()
 c = s["件数"]
-print(f"  {n}: シナリオ {c['s01 シナリオ']} / 合格 {c['s02 合格']} / 不合格 {c['s02 不合格（04）']} / 台本 {c['s03 台本']}")
-for r in s["時間と料金"].get("LLM（全実行の合計、プロンプトごと）", []):
+print(f"  {n}: シナリオ {c['s01 シナリオ']} / 会話 {c['s02 会話（check で不合格になったものを除く）']}"
+      f" / check 不合格 {c['check 不合格']} / 台本 {c['s03 台本']}")
+for r in s["時間と LLM の使用量"].get("LLM（全実行の合計、プロンプトごと）", []):
     print(f"      {r['tag']:10s} {r['calls']:5d} 回 失敗 {r['errors']} 出力 {r['completion_tokens']:,} {r['seconds']:.0f} 秒")
 EOF
     echo "      思考の混入・空の出力による引き直し: $(grep -c '\[警告\]' "$OUT/run_$n.log")"

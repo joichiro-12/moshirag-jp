@@ -16,7 +16,6 @@
 #
 # 会話の長さはユーザ役の EOC（ユーザの目的で決まる）に任せる。--max_turns 8 は打ち切りの上限。
 # 2026-10-06 にシナリオ方式へ変えたので、JaQuAD 由来（pilot5k/）とは生成条件が揃っていない。
-# 04 事後検査で不合格の会話は $OUT/rejected/ に置かれ、s03 には渡らない。
 #
 # 出力は JaQuAD 由来（pilot5k/）と分けて wiki_main/ に置く。stem は wiki_scenario_NNNNNN になる
 # （QA 方式の wiki_qa_NNNNNN とは名前が重ならない）。
@@ -80,7 +79,7 @@ $VENV/bin/python "$SCRIPT" \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" \
     --min_turns 1 --max_turns 8 --workers 32 \
     --effort_user high --effort_need low --effort_lead low \
-    --effort_ref low --effort_body low --effort_check low --resume 2>&1 | tail -20
+    --effort_ref low --effort_body low --resume 2>&1 | tail -20
 E=$(date +%s)
 
 echo "===== 終了 $(date) ====="
