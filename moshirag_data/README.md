@@ -65,7 +65,7 @@ python moshirag_data/dev/run_local.py --input <記事の JSON> --work <作業場
 
 | 場所 | 中身 |
 | --- | --- |
-| `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`） |
+| `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`・`04_backchannel.txt`） |
 | `constants/moshi_persona.json` | Moshi のペルソナ |
 | `constants/user_persona.json` | ユーザのペルソナの候補と、年齢層の重み |
 | `constants/user_goals.json` | ユーザの目的と終了条件 |

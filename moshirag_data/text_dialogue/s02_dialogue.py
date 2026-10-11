@@ -83,6 +83,121 @@ REF_ROLE = load_prompt("02-2_ref.txt")
 # ---- 03 body / 応答 -----------------------------------------------------------------
 BODY_ROLE = load_prompt("03_body.txt")
 
+# ---- 04 相づち ----------------------------------------------------------------------
+BACKCHANNEL_ROLE = load_prompt("04_backchannel.txt")
+
+
+
+# ======================================================================================
+# 04 相づち：1 往復ごとに、その往復の発話の途中に聞き手の相づちを LLM で書き足す
+# ======================================================================================
+# LLM には発話を［］の相づちで区切らせるだけで、発話の文字は変えさせない。結果は会話の "script" に書き、
+# s03 はそれを台本にする（相づちは会話履歴 hist には入れないので、01〜03 には見えない）。［］を取り除いて元の発話と一致しない行と、前置きの行は、相づち無しの元の
+# 発話にする（"rejected_lines"）。長すぎる相づち、前後の発話が短すぎる相づち、モシが打つ です・ます調で
+# ない相づちは、その相づちだけを捨てて前後をつなぐ（"dropped" に理由を記録）。前置きと本題は別の行なので、その間に
+# 相づちは入らない（s06 の d_lead が変わらない）
+
+# 台本の行の話し手の書き方。role は s03 が lead・body の位置を求めるのに使う
+BC_LABEL = {"user": "人", "lead": "モシ（前置き）", "body": "モシ（本題）", "reply": "モシ"}
+BC_SPEAKER = {"user": "A", "lead": "B", "body": "B", "reply": "B"}   # A=人間 / B=moshi
+BC_LISTENER = {"A": "B", "B": "A"}
+_BC_LINE = re.compile(r"^\s*(\d+)\s*(?:" + "|".join(re.escape(v) for v in BC_LABEL.values()) + r")\s*[:：]\s*(.*)$")
+_BC_MARK = re.compile(r"［([^］]*)］")
+_SPACE = re.compile(r"\s+")
+MAX_BC_CHARS = 7   # 相づちの長さの上限（プロンプトでは 1〜6 字。そうなんですね が入るように少し余裕を持たせる）
+MIN_SEG_CHARS = 6  # 相づちの前後の発話の長さの下限（句読点を除く。プロンプトでは 8 字以上）
+# モシが打ってよい相づち（ペルソナが です・ます調なので、うん・そうだね などは使わせない）
+MOSHI_BACKCHANNELS = {"はい", "ええ", "はいはい", "なるほど", "へえ", "そうですね", "そうですよね",
+                      "そうなんですね", "そうなんです"}
+_NOT_COUNTED = re.compile(r"[、。？！…\s]")
+
+
+def turn_lines(k: int, t: dict) -> list[dict]:
+    """1 往復を台本の行にする。turn は s02 のターンの index。"""
+    lines = [{"turn": k, "role": "user", "text": t["user"]}]
+    if t.get("body") is None:
+        return lines
+    if t["need"]:
+        return lines + [{"turn": k, "role": "lead", "text": t["lead"]},
+                        {"turn": k, "role": "body", "text": t["body"]}]
+    return lines + [{"turn": k, "role": "reply", "text": t["body"]}]
+
+
+def render_lines(lines: list[dict]) -> str:
+    return "\n".join(f"{i + 1} {BC_LABEL[l['role']]}: {l['text']}" for i, l in enumerate(lines))
+
+
+def render_script(script: list[dict]) -> str:
+    """相づちを書き足した台本を、相づちを［］に入れた形で 1 発話 1 行にする（04 に会話履歴として見せる）。"""
+    out, key = [], None
+    for x in script:
+        if x["role"] == "backchannel":
+            out[-1] += f"［{x['text']}］"
+        elif (x["turn"], x["role"]) == key:
+            out[-1] += x["text"]
+        else:
+            key = (x["turn"], x["role"])
+            out.append(f"{BC_LABEL[x['role']]}: {x['text']}")
+    return "\n".join(out) or "（まだ無い）"
+
+
+def plain_script(lines: list[dict]) -> list[dict]:
+    """相づち無しの台本（04 が失敗したとき、最後の EOC の発話）。"""
+    return [{"speaker": BC_SPEAKER[l["role"]], "text": l["text"], "turn": l["turn"], "role": l["role"]}
+            for l in lines]
+
+
+def split_line(orig: str, out: str, allowed: set[str] | None = None) -> tuple[list[str], list[str]] | None:
+    """LLM が区切った行を（[発話, 相づち, 発話, …], 捨てた相づちの理由の一覧）にする。
+    allowed があれば、それ以外の相づちは捨てる。発話の文字が変わっていれば None。"""
+    parts = _BC_MARK.split(out.strip())
+    texts, bcs = parts[0::2], [b.strip() for b in parts[1::2]]
+    if _SPACE.sub("", "".join(texts)) != _SPACE.sub("", orig):
+        return None
+    # 決まりに合わない相づちを捨てて、前後の発話をつなぐ。前から順に見て、
+    # 相づちの前（つないだ後のもの）と後の発話が十分に長いものだけを残す
+    out_parts, dropped = [texts[0]], []
+    for b, t in zip(bcs, texts[1:]):
+        if not 0 < len(b) <= MAX_BC_CHARS:
+            why = "長さ"
+        elif allowed is not None and b.rstrip("。、！") not in allowed:
+            why = "口調"
+        elif len(_NOT_COUNTED.sub("", out_parts[-1])) < MIN_SEG_CHARS:
+            why = "前が短い"
+        elif len(_NOT_COUNTED.sub("", t)) < MIN_SEG_CHARS:
+            why = "後が短い"
+        else:
+            out_parts += [b, t]
+            continue
+        out_parts[-1] += t
+        dropped.append(why)
+    return out_parts, dropped
+
+
+def build_script(lines: list[dict], out: str) -> tuple[list[dict], list[int], list[str]]:
+    """LLM の出力から台本を組み立てる。戻り値は（台本, 元の発話に戻した行の番号, 捨てた相づちの理由の一覧）。"""
+    got = {}
+    for raw in out.splitlines():
+        m = _BC_LINE.match(raw)
+        if m:
+            got.setdefault(int(m.group(1)) - 1, m.group(2))
+    script, rejected, dropped = [], [], []
+    for i, l in enumerate(lines):
+        spk = BC_SPEAKER[l["role"]]
+        allowed = MOSHI_BACKCHANNELS if BC_LISTENER[spk] == "B" else None
+        res = split_line(l["text"], got[i], allowed) if i in got else None
+        if res is None or (l["role"] == "lead" and len(res[0]) > 1):
+            rejected.append(i + 1)
+            parts = [l["text"]]
+        else:
+            parts = res[0]
+            dropped += res[1]
+        for j, p in enumerate(parts):
+            if j % 2:
+                script.append({"speaker": BC_LISTENER[spk], "text": p, "turn": l["turn"], "role": "backchannel"})
+            else:
+                script.append({"speaker": spk, "text": p, "turn": l["turn"], "role": l["role"]})
+    return script, rejected, dropped
 
 
 # ======================================================================================
@@ -135,6 +250,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
 
     hist: list[tuple[str, str]] = []   # 会話はユーザから始める
     turns: list[dict] = []
+    script: list[dict] = []            # 相づちを書き足した台本（04）
     ended = False
     for k in range(args.max_turns):
         # ---- 01 ユーザ発話：シナリオ・会話履歴（最初だけ話し始めの形を指定）--------------
@@ -203,8 +319,30 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             raise RuntimeError("モシの応答が空")
         turn.update(lead=lead, reference=ref, body=body, ref_has_unknown="不明" in ref,
                     ref_basis=basis)
+
+        # ---- 04 相づち：相づち込みの会話履歴・この往復の発話 ----------------------------------
+        # 失敗しても会話は作り直さず、この往復は相づち無しにする
+        lines = turn_lines(k, turn)
+        try:
+            raw = call(client, model, BACKCHANNEL_ROLE,
+                       f"ここまでの会話:\n{render_script(script)}\n\nこの往復の台本:\n{render_lines(lines)}\n\n出力:",
+                       args.effort_backchannel)
+            seg, rejected, dropped = build_script(lines, raw)
+            failed = False
+        except Exception as e:  # noqa: BLE001
+            raw, seg, rejected, dropped = f"（失敗）{e}", plain_script(lines), [], []
+            failed = True
+        script += seg
+        # rejected_lines：発話の文字が変わったので元に戻した行。dropped：捨てた相づちの理由
+        turn["backchannel"] = {"raw": raw, "failed": failed, "n_lines": len(lines),
+                               "n_backchannel": sum(1 for x in seg if x["role"] == "backchannel"),
+                               "rejected_lines": rejected, "dropped": dropped}
         turns.append(turn)
         hist.append(("moshi", lead + body))
+
+    # 最後の EOC の発話（モシの応答が無い）は相づちを入れずに台本に足す
+    if turns and turns[-1].get("body") is None:
+        script += plain_script(turn_lines(len(turns) - 1, turns[-1]))
 
     # ---- s03 が読む形式に組み立てる ----------------------------------------------------
     record = []
@@ -232,6 +370,8 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "chunks": [t["reference"] for t in turns if t.get("need")],   # s03 が struct.json に写す
         "turns": turns,
         "record": record,
+        "script": script,
+        "n_backchannel": sum(1 for x in script if x["role"] == "backchannel"),
         "n_user_turns": len(turns),
         "n_augmented": sum(1 for t in turns if t.get("need")),
         "n_clarify": sum(1 for t in turns if t.get("clarify")),
@@ -286,7 +426,7 @@ def main(args) -> None:
                 pj.write_text(json.dumps(conv, ensure_ascii=False, indent=2), encoding="utf-8")
                 pt.write_text("\n".join(conv["record"]) + "\n", encoding="utf-8")
                 return stem, (f"ok turns={conv['n_user_turns']} aug={conv['n_augmented']} clarify={conv['n_clarify']} "
-                              f"eoc={conv['ended_by_eoc']}")
+                              f"eoc={conv['ended_by_eoc']} bc={conv['n_backchannel']}")
             except Exception as e:  # noqa: BLE001
                 if attempt == 2:
                     return stem, f"FAIL {e}"
@@ -329,6 +469,7 @@ def build_parser():
     p.add_argument("--effort_lead", default="low")
     p.add_argument("--effort_ref", default="low")
     p.add_argument("--effort_body", default="low")
+    p.add_argument("--effort_backchannel", default="low")
     p.add_argument("--seed", type=int, default=1)
     p.add_argument("--resume", action="store_true")
     return p

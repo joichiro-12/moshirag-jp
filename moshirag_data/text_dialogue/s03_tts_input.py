@@ -5,6 +5,7 @@
   <stem>.struct.json  lead/body の turn index と参照文（s06 で使う）
 
 lead / body は別ターンとして出し、manifest から各部の onset を真値で取れるようにする。
+s02 で相づちを書き足した会話（JSON に "script" がある）は、その台本を使う。
 """
 
 from __future__ import annotations
@@ -75,6 +76,26 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
     return turns, struct
 
 
+def parse_script(d: dict) -> tuple[list[dict], list[dict]]:
+    """s02 で相づちを書き足した台本を (台本ターン列, 構造情報) に分解する。body は最初の部分の index を指す。"""
+    script = d["script"]
+    turns = [{"speaker": s["speaker"], "text": s["text"]} for s in script]
+    struct = []
+    for k, t in enumerate(d["turns"]):
+        if not t.get("need") or t.get("body") is None:
+            continue
+        idx = {r: next(i for i, s in enumerate(script) if s["turn"] == k and s["role"] == r)
+               for r in ("lead", "body")}
+        struct.append({
+            "lead_turn_index": idx["lead"],
+            "body_turn_index": idx["body"],
+            "lead": t["lead"],
+            "body": t["body"],
+            "reference": t["reference"],
+        })
+    return turns, struct
+
+
 def main(args: argparse.Namespace) -> None:
     src = Path(args.input_dir)
     out = Path(args.output_dir)
@@ -87,7 +108,7 @@ def main(args: argparse.Namespace) -> None:
     n_ok = n_aug = 0
     for f in files:
         d = json.loads(f.read_text(encoding="utf-8"))
-        turns, struct = parse_record(d["record"])
+        turns, struct = parse_script(d) if "script" in d else parse_record(d["record"])
         if not turns:
             continue
         stem = f.stem
@@ -114,6 +135,8 @@ def main(args: argparse.Namespace) -> None:
                 "code_commit": d.get("code_commit", ""),
                 "n_turns": len(turns),
                 "augmented": struct,
+                "backchannel_turn_indices": [i for i, s in enumerate(d.get("script", []))
+                                             if s["role"] == "backchannel"],
             }, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )
