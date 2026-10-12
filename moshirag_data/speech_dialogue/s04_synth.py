@@ -240,6 +240,9 @@ def main():
     ap.add_argument("--voices", help="参照音声の設定 JSON（load_voices を参照）。省略時はモデル任せの声")
     ap.add_argument("--struct_dir", help="s03 の <stem>.struct.json の置き場所（--voices のとき）。"
                                          "省略時は --in_dir か --pool_dir")
+    ap.add_argument("--backchannels", choices=["none", "stat"], default="none",
+                    help="TTS 側で聞き手の相づちを足すか。none は足さない（台本の相づちだけになる。2026-10-12 に決定）、"
+                         "stat は毎分 3.1 回の割合で足す（台本に書いた相づちは、どちらでも台本の 1 行として合成する）")
     a = ap.parse_args()
     if bool(a.in_dir) == bool(a.pool_dir) or (a.pool_dir and not a.claim_dir):
         ap.error("--in_dir か、--pool_dir と --claim_dir の組のどちらか一方を指定する")
@@ -293,7 +296,7 @@ def main():
             prompts=prompts, timing=TimingConfig(seed=a.seed),
             turn_timing="stat", turn_vap_json=None,
             vap_python=".venv-vap/bin/python", vap_device="cpu",
-            backchannels="stat", vap_json=None, bc_per_minute=3.1,
+            backchannels=a.backchannels, vap_json=None, bc_per_minute=3.1,
             temperature=0.9, topk=20, max_turn_ms=a.max_turn_ms,
         )
         if SLIDE["dropped"]:
