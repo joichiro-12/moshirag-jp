@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import sys
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -22,14 +23,17 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "text_dialogue")
 from libs.llm import call, first_line  # noqa: E402
 from libs.persona import MOSHI_PERSONA  # noqa: E402
 
-PROMPT = Path(__file__).resolve().parent / "prompts" / "04_check.txt"
+PROMPTS = Path(__file__).resolve().parent / "prompts"
 _print_lock = threading.Lock()
 
 
+def load(name: str) -> str:
+    text = (PROMPTS / name).read_text(encoding="utf-8")
+    return text[:-1] if text.endswith("\n") else text
+
+
 def check_role() -> str:
-    text = PROMPT.read_text(encoding="utf-8")
-    text = text[:-1] if text.endswith("\n") else text
-    return text.format(persona=MOSHI_PERSONA)
+    return load("04_check.txt").format(persona=MOSHI_PERSONA)
 
 
 def parse_check(out: str) -> bool:
@@ -56,6 +60,33 @@ def render_script(turns: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def render_backchannel_script(script: list[dict]) -> str:
+    """相づちの検査に渡す台本。相づちは話し手の発話の中に［番号 聞き手: 相づち］で入れる。"""
+    name = {"A": "人", "B": "モシ"}
+    lines, key, n = [], None, 0
+    for x in script:
+        if x["role"] == "backchannel":
+            n += 1
+            lines[-1] += f"［{n} {name[x['speaker']]}: {x['text']}］"
+        elif (x["turn"], x["role"]) == key:
+            lines[-1] += x["text"]
+        else:
+            key = (x["turn"], x["role"])
+            lines.append(f"{name[x['speaker']]}: {x['text']}")
+    return "\n".join(lines)
+
+
+_ISSUE = re.compile(r"^\s*(\d+)\s*[:：]\s*([a-e])\b\s*(.*)$")
+
+
+def parse_backchannel_check(out: str) -> tuple[bool, list[dict]]:
+    """（合格か, 当てはまった相づちの一覧）。"""
+    passed = parse_check(out)
+    issues = [{"index": int(m.group(1)), "type": m.group(2), "reason": m.group(3).strip()}
+              for m in map(_ISSUE.match, out.splitlines()[1:]) if m]
+    return passed, issues
+
+
 def main(args) -> None:
     from openai import OpenAI
 
@@ -65,6 +96,7 @@ def main(args) -> None:
     rej = src / "rejected"
     rej.mkdir(parents=True, exist_ok=True)
     system = check_role()
+    bc_system = load("04_check_backchannel.txt")
 
     # 検査済み（"check" がある）会話は飛ばす。rejected/ にあるものも検査済み
     targets = [p for p in sorted(src.glob("*.json"))
@@ -83,6 +115,23 @@ def main(args) -> None:
                 if attempt == 2:
                     return p.stem, f"FAIL {e}"
         conv["check"] = {"passed": passed, "raw": raw, "model": args.model}
+        if "script" in conv:
+            n_bc = sum(1 for x in conv["script"] if x["role"] == "backchannel")
+            res = {"model": args.model, "n_backchannel": n_bc}
+            if n_bc == 0:
+                res.update(passed=True, raw="", issues=[])
+            else:
+                for attempt in range(3):
+                    try:
+                        bc_raw = call(client, args.model, bc_system,
+                                      f"台本:\n{render_backchannel_script(conv['script'])}\n\n検査:", args.effort)
+                        bc_passed, issues = parse_backchannel_check(bc_raw)
+                        res.update(passed=bc_passed, raw=bc_raw, issues=issues)
+                        res.pop("error", None)
+                        break
+                    except Exception as e:  # noqa: BLE001
+                        res["error"] = str(e)
+            conv["check_backchannel"] = res
         p.write_text(json.dumps(conv, ensure_ascii=False, indent=2), encoding="utf-8")
         if passed:
             return p.stem, "ok"

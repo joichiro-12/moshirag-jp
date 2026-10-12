@@ -117,7 +117,7 @@ FRAME_RATE = 12.5
 HOME = Path.home()
 TTS_PKG = HOME / "moshirag_tts" / "src" / "zoom1-tts"
 TTS_PY = TTS_PKG / ".venv" / "bin" / "python"
-TTS_SYNTH = HOME / "moshirag_tts" / "synth_worker.py"
+TTS_SYNTH = Path(__file__).resolve().parents[1] / "speech_dialogue" / "s04_synth.py"
 MFA_ENV = HOME / "miniforge3" / "envs" / "mfa"
 MFA_ROOT = HOME / "moshirag_mfa" / "mfa_root"
 BEAM_YAML = HOME / "mfa_beam.yaml"
@@ -193,6 +193,8 @@ def main() -> None:
     ap.add_argument("--llm_model", default="gpt-6-luna", help="openai のときのモデル（ノートブックと同じ）")
     ap.add_argument("--llm_base_url", default=None, help="省略時は openai / localhost:8000")
     ap.add_argument("--llm_workers", type=int, default=8, help="s01・s02 の並列数")
+    ap.add_argument("--voices", default=None,
+                    help="s04 の参照音声の設定 JSON（s04_synth.load_voices を参照）。省略時はモデル任せの声")
     ap.add_argument("--mfa_jobs", type=int, default=4)
     ap.add_argument("--seed", type=int, default=1)
     a = ap.parse_args()
@@ -217,12 +219,12 @@ def main() -> None:
         return
 
     if a.dry_run:
-        # s02 は 1 往復に 01・02・03 の 3 回（挨拶・雑談で始まる最初の往復は 02 を呼ばず 2 回）、
-        # 検索するときは 02-1・02-2 が足されて 5 回。最後に EOC を出す 01 が 1 回。
-        # 最小は「挨拶 → 返事 → EOC」の 3 回、最大は 8 往復すべて検索した 40 回。check は 1 会話 1 回
+        # s02 は 1 往復に 01・02・03・04 の 4 回（挨拶・雑談で始まる最初の往復は 02 を呼ばず 3 回）、
+        # 検索するときは 02-1・02-2 が足されて 6 回。最後に EOC を出す 01 が 1 回。
+        # 最小は「挨拶 → 返事 → EOC」の 4 回、最大は 8 往復すべて検索した 48 回。check は 1 会話 1 回
         print(f"  s01 の LLM 呼び出し：{len(records)} 回（記事ごとに 1 回。失敗しても引き直しは 3 回まで）")
-        print(f"  s02 の LLM 呼び出し：1 会話あたり 3〜40 回。{len(records)} 会話なら "
-              f"{len(records) * 3:,}〜{len(records) * 40:,} 回（失敗した会話は 3 回まで作り直す）")
+        print(f"  s02 の LLM 呼び出し：1 会話あたり 4〜48 回。{len(records)} 会話なら "
+              f"{len(records) * 4:,}〜{len(records) * 48:,} 回（失敗した会話は 3 回まで作り直す）")
         if "check" in steps:
             print(f"  check の LLM 呼び出し：{len(records)} 回（会話ごとに 1 回）")
         for s in steps:
@@ -296,7 +298,8 @@ def main() -> None:
                 s03.main(Namespace(input_dir=str(S02), output_dir=str(S03), limit=0))
 
             elif s == "s04":   # 台本 → 音声（セル 24）。音声がある会話は synth_worker が飛ばす
-                run_step([TTS_PY, TTS_SYNTH, "--in_dir", S03, "--out_dir", AUDIO, "--oom_retries", "0"],
+                run_step([TTS_PY, TTS_SYNTH, "--in_dir", S03, "--out_dir", AUDIO, "--oom_retries", "0",
+                          *(["--voices", Path(a.voices).resolve()] if a.voices else [])],
                          logs / "s04_synth.log", cwd=TTS_PKG,
                          env={"TTS_DIR": str(TTS_PKG), "HF_HUB_OFFLINE": "1", "TRANSFORMERS_OFFLINE": "1",
                               "CUDA_VISIBLE_DEVICES": gpu})
@@ -463,6 +466,42 @@ def summarize_log(work: Path) -> dict:
     }
 
 
+def summarize_backchannel(convs: list[dict]) -> dict | None:
+    """相づち（s02 の 04）の、仕組みの上での失敗と、check の相づちの検査の結果。"""
+    convs = [c for c in convs if "script" in c]
+    if not convs:
+        return None
+    recs = [t["backchannel"] for c in convs for t in c["turns"] if "backchannel" in t]
+    n_bc = sum(r["n_backchannel"] for r in recs)
+    n_lines = sum(r["n_lines"] for r in recs)
+    dropped = [w for r in recs for w in r["dropped"]]
+    checked = [c for c in convs if "passed" in c.get("check_backchannel", {})]
+    issues = [i for c in checked for i in c["check_backchannel"]["issues"]]
+    n_checked_bc = sum(c["check_backchannel"]["n_backchannel"] for c in checked)
+
+    def rate(a, b):
+        return f"{a}/{b} = {a / b:.1%}" if b else None
+
+    return {
+        "会話": len(convs),
+        "往復（04 を呼んだ回数）": len(recs),
+        "04 の呼び出しの失敗（相づち無しにした往復）": rate(sum(r["failed"] for r in recs), len(recs)),
+        "残った相づち": n_bc,
+        "1 会話あたりの相づち": round(n_bc / len(convs), 1),
+        "発話の文字が変わったので元に戻した行": rate(sum(len(r["rejected_lines"]) for r in recs), n_lines),
+        "捨てた相づち（LLM が出した相づちのうち）": rate(len(dropped), n_bc + len(dropped)),
+        "捨てた理由": dict(collections.Counter(dropped).most_common()),
+        "check：相づちを検査した会話": len(checked),
+        "check：相づちが合格した会話": rate(sum(c["check_backchannel"]["passed"] for c in checked), len(checked)),
+        "check：不自然と判定された相づち": rate(len({(c["stem"], i["index"]) for c in checked
+                                                 for i in c["check_backchannel"]["issues"]}), n_checked_bc),
+        "check：種類（a 受け方 / b 切る位置 / c 言葉づかい / d 後の発話と重なる / e 多すぎ・続く）":
+            dict(collections.Counter(i["type"] for i in issues).most_common()),
+        "check：相づちの検査の全文（不合格の会話ごと）": {c["stem"]: c["check_backchannel"]["raw"] for c in checked
+                                            if not c["check_backchannel"]["passed"]},
+    }
+
+
 def summarize(work: Path) -> dict:
     """工程ごとに残った件数と、s02 の会話の中身の集計。"""
     S01, S02 = work / "s01", work / "s02"
@@ -516,6 +555,8 @@ def summarize(work: Path) -> dict:
                                                        for t in aug),
         },
         "check 不合格の理由（全文、会話ごと）": {stem: c["check"]["raw"] for stem, c in rejected.items()},
+        "相づち（s02 の 04。check で不合格になった会話も含む）": summarize_backchannel(
+            convs + list(rejected.values())),
         "時間と LLM の使用量": summarize_log(work),
         "s06 d_lead（秒）": ({"件数": len(d_leads), "平均": round(st.mean(d_leads), 2),
                              "中央": round(st.median(d_leads), 2),
