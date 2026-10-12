@@ -133,6 +133,7 @@ def main(args: argparse.Namespace) -> None:
                 "chunks": d.get("chunks", []),
                 "greeting_lines": d.get("greeting_lines"),
                 "code_commit": d.get("code_commit", ""),
+                "user_gender": d.get("persona", {}).get("性別"),   # s04 でユーザの参照音声を選ぶ
                 "n_turns": len(turns),
                 "augmented": struct,
                 "backchannel_turn_indices": [i for i, s in enumerate(d.get("script", []))

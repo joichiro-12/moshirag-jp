@@ -59,6 +59,11 @@ python moshirag_data/dev/run_local.py --input <記事の JSON> --work <作業場
 
 外部環境の置き場所は `dev/run_local.py` の冒頭で指定する。
 
+s04 の声は `--voices speech_dialogue/sample_audio/voices.json` で指定する（書き方は `speech_dialogue/s04_synth.py` の `load_voices`）。
+Moshi は固定の声。ユーザはシナリオの性別（s03 が `struct.json` の `user_gender` に書く）の候補から
+会話ごとに 1 つ選び、選んだ声を `s04_audio/<stem>.voice.json` に残す。
+省略するとモデル任せの声（会話ごとに変わる）。
+
 ## 会話の作り方を変えるとき
 
 コードではなく、次のファイルを編集する（`text_dialogue/` の下）。
