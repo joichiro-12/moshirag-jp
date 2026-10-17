@@ -45,7 +45,7 @@ export AUDIT_NET=1
 B=/groups/gcg51557/experiments/0374_japanese_kame
 TTS=$B/tts/zoom1-tts
 PY=$TTS/.venv/bin/python
-W=$PWD/moshirag_data/s04_synth.py
+W=$PWD/moshirag_data/speech_dialogue/s04_synth.py
 
 echo "===== $(date) $(hostname) ====="
 git rev-parse --short HEAD; git status --porcelain | grep -v '^??' | wc -l

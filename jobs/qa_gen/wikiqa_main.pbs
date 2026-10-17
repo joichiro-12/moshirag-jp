@@ -1,14 +1,17 @@
 #!/bin/bash
-# Wikipedia の記事から問いと答えの組を作る（本番 20 万件）。
+# Wikipedia の記事から会話のシナリオを作る（本番 20 万件）。
 #
 #   for s in $(seq 0 7); do qsub -P gcg51557 -v SHARD=$s,NSHARD=8 jobs/qa_gen/wikiqa_main.pbs; done
 #
 # 規模の根拠：JaQuAD の 35,687 トピックの 5.6 倍。4 スタイルに広げれば 80 万会話になり、
 # 当面の音声化能力（36 会話/時/GPU）を大きく超えるため、これ以上は先に作っても使えない。
-# 候補は 740,916 件あるので、必要になれば --num_samples を上げるだけで増やせる
-# （シャッフルは乱数種のみに依存するため、既存分はそのまま活きる）。
+# 記事は ja_wiki の全件から取る（事前の絞り込みはしない）。必要になれば --num_samples を
+# 上げるだけで増やせる（シャッフルは乱数種のみに依存するため、既存分はそのまま活きる）。
+# 2026-10-06 に入力を候補記事（旧 s01b の出力、740,916 件）から ja_wiki の全件に変えたので、
+# それより前の出力とは記事の並びが違う。出力済みの記事は wiki_id で飛ばす。
 #
-# 実測スループットは 26,866 件/時（1 GPU、32 並列）。8 分割で 1 シャード約 1 時間。
+# QA を作っていたときの実測スループットは 26,866 件/時（1 GPU、32 並列、記事の冒頭 1,000 字）。
+# シナリオは記事を 6,000 字まで渡すので、これより遅くなる（未測定）。
 #PBS -P gcg51557
 #PBS -q rt_HG
 #PBS -l select=1
@@ -37,8 +40,8 @@ mkdir -p "$VLLM_CACHE_ROOT" "$TORCHINDUCTOR_CACHE_DIR" "$TRITON_CACHE_DIR"
 
 MODEL=/groups/gcg51557/experiments/0374_japanese_kame/models/llm-jp-4-32b-a3b-thinking
 VENV=.venv_vllm; NAME=llm-jp-4-32b-a3b-thinking
-IN=data/japanese_kame/qa_pairs/wiki_candidates.jsonl
-OUT=data/japanese_kame/qa_pairs/wiki_qa.jsonl
+WIKI=/groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki
+OUT=data/japanese_kame/qa_pairs/wiki_scenario.jsonl
 TOTAL=200000
 
 echo "===== $(date) $(hostname) シャード ${SHARD}/${NSHARD} ====="
@@ -58,13 +61,13 @@ for i in $(seq 1 150); do
 done
 
 S=$(date +%s)
-$VENV/bin/python moshirag_data/s01c_wiki_qa.py \
-    --input_file "$IN" --output_file "$OUT" \
+$VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py \
+    --wiki_dir "$WIKI" --output_file "$OUT" \
     --num_samples $TOTAL --seed 1 --shard "$SHARD" --nshard "$NSHARD" \
-    --workers 32 --effort low --role default \
+    --workers 32 --effort low \
     --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
 E=$(date +%s)
 
 echo "===== 終了 $(date) ====="
 echo "経過 $((E-S)) 秒"
-echo "全シャードの合計: $(cat data/japanese_kame/qa_pairs/wiki_qa.s*.jsonl 2>/dev/null | wc -l) 件"
+echo "全シャードの合計: $(cat data/japanese_kame/qa_pairs/wiki_scenario.s*.jsonl 2>/dev/null | wc -l) 件"

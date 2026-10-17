@@ -1,0 +1,114 @@
+#!/bin/bash
+# LLM の選定：4 モデルそれぞれで run_local.py の s01〜s03 を、同じ記事の束から流す。
+# 予約ノード 1 台（H200 × 8）の GPU 0〜3 に、1 GPU に 1 モデルの vLLM を立てて同時に回す。
+#
+#   cd $B/llmsel/moshirag-jp
+#   qsub -l walltime=01:00:00 -v RTYPE=rt_HF,LIMIT=5 jobs/llm_select/llmsel.pbs   # 試運転（先頭 5 記事）
+#   qsub -v RTYPE=rt_HF,LIMIT=20 jobs/llm_select/llmsel.pbs                        # 比較（先頭 20 記事）
+#   qsub -v RTYPE=rt_HF,LIMIT=20,ONLY=1 jobs/llm_select/llmsel.pbs                 # 一部のモデルだけ（NAMES の番号）
+#
+# 予約ノードの決まり（「ABCI 3.0 の使い方 @LLM-jp」p.19〜28）：キューは R9920261000、
+# -v RTYPE=rt_HF は qsub の引数で渡す（ディレクティブの -v と併用しない）、
+# ジョブ名は実験番号 4 桁から始める、アレイジョブは使わない。
+#
+# 思考の切り替えとサンプリングは libs/llm.py がモデル名で決めるので、NAMES は変えない。
+# 04 の事後検査も各モデル自身が行う（合格率はモデル間の品質比較には使わない）。
+# すべての呼び出しの生の応答（本文・思考・終了理由）を $OUT/<モデル>/llm_raw.jsonl に残す（libs/llm.py の LLM_RAW_LOG）。
+# --max-model-len は 4 モデルとも 32768（本番の llm-jp-4 は 16384。思考ありの Qwen3.6 が途中で切れないように揃えて広げた）。
+# 本番の PBS と違い、外部接続を塞ぐプロキシは置かない（localhost の vLLM への接続まで止まるため）。
+#PBS -P gcg51557
+#PBS -q R9920261000
+#PBS -l select=1
+#PBS -l walltime=04:00:00
+#PBS -N 0374_llmsel
+#PBS -j oe
+#PBS -o logs/
+
+set -u
+cd "${PBS_O_WORKDIR:-$(pwd)}"
+mkdir -p logs
+source /etc/profile.d/modules.sh 2>/dev/null || true
+module load cuda/13.0 2>/dev/null || module load cuda/12.8 2>/dev/null || true
+export CUDA_HOME="${CUDA_HOME:-${CUDA_PATH:-}}"
+
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 TOKENIZERS_PARALLELISM=false
+export VLLM_USE_FLASHINFER_SAMPLER=0 VLLM_ENABLE_V1_MULTIPROCESSING=0
+export NO_PROXY=localhost,127.0.0.1 no_proxy=localhost,127.0.0.1
+
+B=/groups/gcg51557/experiments/0374_japanese_kame
+# 本番の .venv_vllm から transformers だけを 5.14.1 に替えた環境（vLLM 0.27.1）。
+# 本番の transformers 5.15.0 では Gemma 4 が起動しない（vllm-project/vllm#51744）。4 モデルともこの環境で流す
+PY=$B/llmsel/.venv_vllm/bin/python
+IN=$B/llmsel/wiki_raw_sample100.json
+LIMIT=${LIMIT:-5}
+OUT=$B/llmsel/runs/limit${LIMIT}_${PBS_JOBID%%.*}
+mkdir -p "$OUT"
+
+NAMES=(llm-jp-4-32b-a3b-thinking gemma-4-31B-it Qwen3.6-35B-A3B Qwen3.6-27B)
+EXTRA=(""                                               # 本番と同じく、思考は libs/llm.py の strip_thinking で剥がす
+       "--reasoning-parser gemma4"
+       "--reasoning-parser qwen3 --language-model-only"
+       "--reasoning-parser qwen3 --language-model-only")
+IDX=(${ONLY:-0 1 2 3})   # 流すモデルの番号（NAMES の添字）
+
+echo "===== $(date) $(hostname) RTYPE=${RTYPE:-?} LIMIT=$LIMIT ====="
+git rev-parse --short HEAD; git status --porcelain | grep -v '^??' | wc -l
+nvidia-smi --query-gpu=index,name --format=csv,noheader
+echo "出力 $OUT"
+
+# 同時に起動すると vLLM の内部通信のポートがぶつかる（EADDRINUSE）ので、
+# モデルごとに VLLM_PORT で範囲を分け、起動もずらす
+PIDS=()
+for i in "${IDX[@]}"; do
+    n=${NAMES[$i]}
+    CUDA_VISIBLE_DEVICES=$i VLLM_PORT=$((30000 + 100 * i)) VLLM_CACHE_ROOT=/tmp/vllm_cache_${USER}_$i \
+    TORCHINDUCTOR_CACHE_DIR=/tmp/inductor_${USER}_$i TRITON_CACHE_DIR=/tmp/triton_${USER}_$i \
+        $PY -m vllm.entrypoints.openai.api_server \
+        --model "$B/models/$n" --served-model-name "$n" \
+        --max-model-len 32768 --gpu-memory-utilization 0.90 --enforce-eager \
+        --port $((8500 + i)) ${EXTRA[$i]} > "$OUT/vllm_$n.log" 2>&1 &
+    PIDS[$i]=$!
+    sleep 15
+done
+trap 'kill "${PIDS[@]}" 2>/dev/null || true' EXIT
+
+# すべて立ち上がるか死ぬまで待つ。死んだモデルは飛ばし、残りで続ける
+UP=()
+for i in "${IDX[@]}"; do
+    n=${NAMES[$i]}
+    for t in $(seq 1 180); do
+        curl -s -o /dev/null "http://localhost:$((8500 + i))/v1/models" && { echo "vLLM ready: $n（$((t * 10)) 秒）"; UP+=($i); break; }
+        kill -0 "${PIDS[$i]}" 2>/dev/null || { echo "!! vLLM died: $n"; tail -20 "$OUT/vllm_$n.log"; break; }
+        sleep 10
+    done
+done
+
+RUNS=()
+for i in "${UP[@]}"; do
+    n=${NAMES[$i]}
+    LLM_RAW_LOG="$OUT/$n/llm_raw.jsonl" \
+        $PY moshirag_data/dev/run_local.py --input "$IN" --work "$OUT/$n" --limit "$LIMIT" --steps s01-s03 \
+        --llm_backend vllm --llm_base_url "http://localhost:$((8500 + i))/v1" --llm_workers 32 --seed 1 \
+        > "$OUT/run_$n.log" 2>&1 &
+    RUNS+=($!)
+done
+[ ${#RUNS[@]} -gt 0 ] && wait "${RUNS[@]}"
+
+echo "===== 終了 $(date) ====="
+for i in "${UP[@]}"; do
+    n=${NAMES[$i]}
+    $PY - "$OUT/$n/summary.json" "$n" <<'EOF'
+import json, sys
+p, n = sys.argv[1], sys.argv[2]
+try:
+    s = json.load(open(p))
+except FileNotFoundError:
+    print(f"  {n}: summary.json が無い"); sys.exit()
+c = s["件数"]
+print(f"  {n}: シナリオ {c['s01 シナリオ']} / 会話 {c['s02 会話（check で不合格になったものを除く）']}"
+      f" / check 不合格 {c['check 不合格']} / 台本 {c['s03 台本']}")
+for r in s["時間と LLM の使用量"].get("LLM（全実行の合計、プロンプトごと）", []):
+    print(f"      {r['tag']:10s} {r['calls']:5d} 回 失敗 {r['errors']} 出力 {r['completion_tokens']:,} {r['seconds']:.0f} 秒")
+EOF
+    echo "      思考の混入・空の出力による引き直し: $(grep -c '\[警告\]' "$OUT/run_$n.log")"
+done

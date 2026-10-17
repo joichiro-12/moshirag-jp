@@ -5,7 +5,7 @@
 #
 # 何度流してもよい。語 JSON（words/ か words_excluded/）がある会話は飛ばす。
 # 音声化の途中のファイルを拾わないよう、wav を書き終わってから 10 分以上経った会話だけを対象にする。
-# 手順の中身は mfa_align.py（ABCI の moshirag_data/s05_align.py と同じもの）を参照。
+# 手順の中身は mfa_align.py（ABCI の moshirag_data/speech_dialogue/s05_align.py と同じもの）を参照。
 set -eu
 J=${1:-20}
 A=/mnt/iot-qnap5/jsato/moshirag_tts/audio

@@ -1,46 +1,11 @@
-"""工程 5 の成果物を、学習用の parquet に束ねる（MoshiRAG 版）。
+"""テキスト・音声トークン、<ret> 位置、参照埋め込みを学習用の parquet に束ねる。
 
-KAME の tools/prepare_dataset.py は text と audio を merge するところまでで、
-MoshiRAG に必要な次の 2 つを持たない。ここで足す。
+<ret>（rag_token_id 4）は lead の最初のテキストトークンの直前（EPAD）に置く。
+codes は [17, T]：行 0 = Moshi のテキスト、1-8 = Moshi の音声、9-16 = ユーザの音声
+（A = ユーザ、B = Moshi）。
 
-1. `<ret>` の埋め込み
-   論文 §4.2：lead 部分の最初のテキストトークンの**直前**のトークンを `<ret>` に置換する。
-   Moshi の式 5 からそこは必ず EPAD になる。`rag_token_id` は 4
-   （`llm-jp-moshi-v1` の未使用 ID。元実装 moshika-rag と同じ値）。
-
-   **位置は工程 4 が出した ret_frame をそのまま使わない。** ret_frame は
-   `int(lead_onset * 12.5) - 1` で求めた値で、実測すると EPAD に当たるのは 35.3% だけだった
-   （残り 64.7% は 1 フレーム手前の PAD）。テキストストリーム上で lead 最初のテキスト
-   トークンを探し、その直前に置く規則に変えると 99.5%（5,116/5,144）が EPAD に着地する。
-
-2. 参照埋め込みの持ち回り
-   ARC-Encoder の出力（**3072 次元。bridge の手前**）を、`<ret>` の位置と対にして載せる。
-   射影層（bridge）は学習対象なので、通した後の値を焼き込んではいけない（論文 §4.2）。
-   KAME の oracle 列と同じく、可変長を values + offsets で平坦化して持つ。
-
-チャネル配置は元実装に合わせる（`lm.py` の num_codebooks = n_q + 1 = 17、
-audio_offset = 1、needed_tokens = num_codebooks - dep_q - 1 = 8 から確定）。
-
-    行 0      テキスト（Moshi の inner monologue。1 本のみ。ユーザ側のテキストは持たない）
-    行 1-8    Moshi の音声（Mimi 8 層）。生成対象
-    行 9-16   ユーザの音声（Mimi 8 層）。条件
-
-**話者ごとに 9 行ずつ分ける形にしてはいけない。** 初版は KAME の prepare_dataset.py を
-踏襲して A / B に 9 行ずつ入れたが、Moshi は 1 本の系列に両話者を載せる設計であり、
-モデルの期待（17）と合わなかった。delays が 17 要素であることが設定側の根拠。
-
-我々のデータでは channel 0（左 / S1）が人間役、channel 1（右 / S2）が Moshi 役。
-工程 5 の出力では A = 人間役、B = Moshi 役に対応する。
-
-出力列
-    dialogue_id                             … 識別子
-    codes, codes_shape                      … [17, T] int32
-    ret_frames                              … <ret> を置いたフレーム位置 [R]
-    d_lead_frames                           … 各 <ret> の d_lead（フレーム数）[R]
-                                              学習時の遅延サンプリング d' に使う。
-                                              d' は毎エポック引き直すので学習時に必要
-    ref_offsets                             … 各参照の埋め込み開始位置 [R+1]
-    ref_values                              … 埋め込みを平坦化したもの [sum(L), 3072] float16
+Columns: dialogue_id, codes, codes_shape, ret_frames, d_lead_frames,
+         ref_offsets [R+1], ref_values [sum(L), 3072] float16
 """
 from __future__ import annotations
 

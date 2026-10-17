@@ -1,26 +1,8 @@
-"""工程 5c：<ret> ごとの参照文を ARC-Encoder で符号化する。
+"""<ret> ごとの参照文を ARC-Encoder で符号化する。
 
-**保存するのは bridge の手前、encoder 出力の 3072 次元である。**
+保存するのは bridge の手前の 3072 次元（射影層は学習対象なので焼き込まない）。
 
-初版は bridge を通した 4096 次元を保存していたが誤りだった。論文 §4.2 は
-    all parameters trainable except for the reference text encoder
-    projected via a one-layer trainable linear layer
-と述べており、**ARC-Encoder は凍結だが射影層は学習される**。bridge 出力を焼き込むと
-射影層が学習されないまま固定値になる（2026-09-03 に arXiv:2604.12928v2 §4.2 で確認）。
-
-したがって役割を分ける。
-    ここ（5c、事前計算）  embedder.forward_embedder → (n/4, 3072)   … 凍結部分
-    学習ループ            EmbProjector で 3072 → 4096              … 学習対象
-
-なお論文は射影を "one-layer" と書くが、実装の EmbProjector は 2 層
-（3072→2048→4096、bias なし）。配布重み ARC4_Encoder_Llama に layer1 / layer2 の
-両方が入っているため、実装（2 層）に合わせ、同梱重みを初期値に使う。
-
-注意：ARC4 の重みは Llama-3.1-8B から読み出せない（2026-08-27 の実測。同条件で ARC8 は
-英語復元 token F1 0.347、ARC4 は 0.015）。原因は未特定。ここでは元実装準拠で ARC4 を
-使い、Moshi 側の学習で読めるかを検証対象に残す。
-
-出力：会話ごとに .npz（ret_frame と埋め込みの対）
+Output: 会話ごとの npz（ret_frame と埋め込みの対）
 """
 import argparse, json, os, sys, urllib.request
 from pathlib import Path

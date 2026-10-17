@@ -26,5 +26,5 @@ done
 echo "===== $(date) 対象の wav $(ls "$S" | wc -l) 件 / トークン済み $(ls "$O" | wc -l) 件"
 
 cd "$T/moshirag-jp"
-.venv/bin/python -m moshirag_data.s07_tok_audio --audio_dir "$S" --output_dir "$O" --num_workers "$N" --resume
+.venv/bin/python -m moshirag_data.postprocess.s07_tok_audio --audio_dir "$S" --output_dir "$O" --num_workers "$N" --resume
 echo "===== $(date) 終了 / トークン $(ls "$O" | wc -l) 件"

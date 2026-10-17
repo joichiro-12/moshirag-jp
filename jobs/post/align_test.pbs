@@ -58,7 +58,7 @@ for c in "cmp20 8" "speed500 32"; do
     set -- $c; name=$1; j=$2
     echo "===== $name（-j $j）$(date) ====="
     S=$(date +%s)
-    "$ENV/bin/python" moshirag_data/s05_align.py --audio_dir "$B/wiki_audio" --stems "$T/$name.txt" \
+    "$ENV/bin/python" moshirag_data/speech_dialogue/s05_align.py --audio_dir "$B/wiki_audio" --stems "$T/$name.txt" \
         --work "$L/$name" --words_dir "$T/words_$name" --mfa "$ENV/bin/mfa" \
         --beam_config "$A/mfa_beam.yaml" -j "$j"
     echo "  終了コード $? / 全体 $(( $(date +%s) - S )) 秒"

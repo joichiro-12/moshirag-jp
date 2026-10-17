@@ -1,26 +1,11 @@
-"""TTS のモデルを 1 回だけ読み込み、担当分の会話をまとめて音声化する。
+"""FireRedTTS2 を 1 回だけ読み込み、担当分の台本をまとめて音声化する。
 
-## なぜ必要か
-
-既存の `synth_shard.pbs` は会話 1 本ごとに `uv run zoom1-dialogue-tts` を起動する。
-`synthesize()` は内部で毎回 `FireRedTTS2(...)` を作るので、**会話ごとにモデル読み込みが
-走っている**。実測は 100 秒/会話で、うちどれだけが読み込みかは未測定である。
-
-音声化は工程全体の律速で、会話生成の 10.4 倍の GPU 時間を使う。ここを詰めると
-全体の見通しが変わる。
-
-## やり方
-
-TTS パッケージは git 管理外なので**本体は書き換えない**。
-`fireredtts2.fireredtts2.FireRedTTS2` をキャッシュ付きに差し替えることで、
-`synthesize()` を無改造のまま呼び、2 回目以降の読み込みを省く。
-`synthesis.py` は関数内で import しているため、モジュール属性の差し替えが効く。
-
-## 確認していないこと
-
-**モデルを使い回したときに会話間で状態が漏れないか。** 漏れると出力が変わる。
-`--verify` は既存の wav と再合成結果を突き合わせてこれを確かめる。
-乱数種は `synthesize()` 内で会話ごとに再設定される（`torch.manual_seed(timing.seed)`）。
+TTS 本体は書き換えず、FireRedTTS2 をキャッシュ付きに差し替えて読み込みを省く。
+--verify で既存の wav と再合成結果を突き合わせ、会話間で状態が漏れないかを確かめる。
+担当の割り方は --in_dir + --shard/--nshard（固定）か、--pool_dir + --claim_dir（取り出し）。
+--voices で参照音声を渡すと、Moshi（[S2]）は固定の声、ユーザ（[S1]）は s03 の struct.json の
+性別に合う候補から会話ごとに選んだ声で合成する（load_voices を参照）。
+選んだ声は <out_dir>/<stem>.voice.json に書く。
 """
 from __future__ import annotations
 import argparse, hashlib, os, sys, time
@@ -95,11 +80,45 @@ def install_model_cache() -> dict:
         if key not in cache:
             t0 = time.time()
             cache[key] = with_retry(lambda: orig(*args, **kw), "モデルの読み込み")
+            install_sliding_context(cache[key])
             print(f"  [モデル読み込み] {time.time()-t0:.1f} 秒", flush=True)
         return cache[key]
 
     f2.FireRedTTS2 = cached
     return cache
+
+
+# 会話 1 本ごとの sliding context の状態（run() が会話の頭で設定する）
+#   fixed   … 文脈の先頭にある、削ってはいけない区間の数（参照音声の数）
+#   dropped … いまの会話で削った古いターンの数
+SLIDE = {"fixed": 0, "dropped": 0}
+
+
+def install_sliding_context(model) -> None:
+    """文脈が TTS の上限を超えたときだけ、古いターンから削って合成し直す。
+
+    FireRedTTS2 は過去の全ターンの音声を文脈に積むため、系列長 3100 トークンを超えると
+    "Inputs too long" で会話ごと失敗する（約 3 分を超える台本。zoom1-tts の README の制約）。
+    参照音声を文脈の先頭に入れると、その分さらに早く当たる。
+    先頭の参照音声（SLIDE["fixed"] 個）は声を決めるので残し、その後ろの古いターンから 1 つずつ削る。
+    上限に当たらない会話は従来どおり全ターンを文脈にするので、出力は変わらない。
+    """
+    orig = model.generate
+
+    def generate(**kw):
+        ctx, fixed = kw["context"], SLIDE["fixed"]
+        # 前のターンで削った数から始める（相づちの再合成のような短い文脈は削らない）
+        d = SLIDE["dropped"] if len(ctx) - fixed > SLIDE["dropped"] else 0
+        while True:
+            try:
+                return orig(**{**kw, "context": ctx[:fixed] + ctx[fixed + d:]})
+            except ValueError as e:
+                if "Inputs too long" not in str(e) or fixed + d >= len(ctx):
+                    raise
+                d += 1
+                SLIDE["dropped"] = max(SLIDE["dropped"], d)
+
+    model.generate = generate
 
 
 def sha(path: Path) -> str:
@@ -108,6 +127,55 @@ def sha(path: Path) -> str:
         for chunk in iter(lambda: f.read(1 << 20), b""):
             h.update(chunk)
     return h.hexdigest()[:16]
+
+
+def load_voices(path: Path) -> dict:
+    """参照音声の設定（--voices）を読み、wav の場所を確かめる。
+
+    書き方（wav の相対パスはこの JSON の置き場所から数える）::
+
+        {"moshi": {"wav": "moshi.wav", "text": "参照音声の書き起こし"},
+         "user":  {"男性": [{"wav": "m01.wav", "text": "..."}, {"wav": "m02.wav", "text": "..."}],
+                   "女性": [{"wav": "f01.wav", "text": "..."}, ...]}}
+
+    Moshi は 1 つに固定する。ユーザは性別ごとに候補を並べ、会話ごとに 1 つを選ぶ（prompts_for）。
+    "user" の鍵は constants/user_persona.json の "性別" の値と同じにする。
+    参照音声は 3〜10 秒の単一話者・無雑音のものが勧められている（zoom1-tts の README）。
+    """
+    import json
+    cfg = json.loads(path.read_text(encoding="utf-8"))
+
+    def entry(v: dict, what: str) -> tuple[str, str]:
+        wav = (path.parent / v["wav"]).resolve()
+        if not wav.exists():
+            raise FileNotFoundError(f"{what} の参照音声が無い: {wav}")
+        return str(wav), v["text"]
+
+    user = {}
+    for g, vs in cfg["user"].items():
+        if not vs:
+            raise ValueError(f"user/{g} の参照音声の候補が空（{path}）")
+        user[g] = [entry(v, f"user/{g}") for v in vs]
+    return {"moshi": entry(cfg["moshi"], "moshi"), "user": user}
+
+
+def prompts_for(voices: dict | None, struct: Path, seed: int) -> tuple[list, dict | None]:
+    """会話 1 本の参照音声 [("[S1]", wav, 書き起こし), ("[S2]", wav, 書き起こし)] と、選んだ声の記録を返す。
+
+    ユーザの性別は s03 の <stem>.struct.json の "user_gender" から取り、その性別の候補から 1 つ選ぶ。
+    選び方は (seed, stem) だけで決まるので、作り直しても同じ会話には同じ声が付く。
+    性別が無い・設定に無い会話は、黙って既定の声にせず失敗にする（声の取り違えに気づけるように）。
+    """
+    import json, random
+    if voices is None:
+        return [], None
+    stem = struct.name[: -len(".struct.json")]
+    gender = json.loads(struct.read_text(encoding="utf-8")).get("user_gender")
+    if gender not in voices["user"]:
+        raise ValueError(f"ユーザの性別 {gender!r} の参照音声が --voices に無い（{struct}）")
+    user = random.Random(f"{seed}:{stem}").choice(voices["user"][gender])
+    record = {"user_gender": gender, "user_wav": user[0], "moshi_wav": voices["moshi"][0]}
+    return [("[S1]", *user), ("[S2]", *voices["moshi"])], record
 
 
 def claim_from_pool(pool: Path, claim: Path):
@@ -169,6 +237,12 @@ def main():
                          "共用の GPU で他の利用者が後からメモリを取ると、飛ばした会話が次々に"
                          "失敗扱いになるため（9/29 の g23 で 6 会話）、飛ばさずに待つ")
     ap.add_argument("--oom_wait", type=float, default=300, help="やり直すまでに待つ秒数")
+    ap.add_argument("--voices", help="参照音声の設定 JSON（load_voices を参照）。省略時はモデル任せの声")
+    ap.add_argument("--struct_dir", help="s03 の <stem>.struct.json の置き場所（--voices のとき）。"
+                                         "省略時は --in_dir か --pool_dir")
+    ap.add_argument("--backchannels", choices=["none", "stat"], default="none",
+                    help="TTS 側で聞き手の相づちを足すか。none は足さない（台本の相づちだけになる。2026-10-12 に決定）、"
+                         "stat は毎分 3.1 回の割合で足す（台本に書いた相づちは、どちらでも台本の 1 行として合成する）")
     a = ap.parse_args()
     if bool(a.in_dir) == bool(a.pool_dir) or (a.pool_dir and not a.claim_dir):
         ap.error("--in_dir か、--pool_dir と --claim_dir の組のどちらか一方を指定する")
@@ -178,6 +252,12 @@ def main():
     net_hits = install_net_audit() if os.environ.get("AUDIT_NET") == "1" else None
     if net_hits is not None:
         print("  外部接続の監査: 有効", flush=True)
+
+    voices = load_voices(Path(a.voices)) if a.voices else None
+    struct_dir = Path(a.struct_dir or a.in_dir or a.pool_dir)
+    if voices:
+        print(f"  参照音声: moshi={voices['moshi'][0]} / user="
+              + ", ".join(f"{g} {len(vs)} 件" for g, vs in voices["user"].items()), flush=True)
 
     cache = install_model_cache()
     from zoom1_dialogue_tts.model import resolve_model
@@ -208,14 +288,24 @@ def main():
             os.rename(f, pool / f.name)
 
     def run(script: Path, out: Path):
-        return synthesize(
+        import json
+        prompts, voice = prompts_for(voices, struct_dir / f"{script.stem}.struct.json", a.seed)
+        SLIDE.update(fixed=len(prompts), dropped=0)
+        result = synthesize(
             model_dir=model_dir, turns=load_script(str(script)), output_path=out,
-            prompts=[], timing=TimingConfig(seed=a.seed),
+            prompts=prompts, timing=TimingConfig(seed=a.seed),
             turn_timing="stat", turn_vap_json=None,
             vap_python=".venv-vap/bin/python", vap_device="cpu",
-            backchannels="stat", vap_json=None, bc_per_minute=3.1,
+            backchannels=a.backchannels, vap_json=None, bc_per_minute=3.1,
             temperature=0.9, topk=20, max_turn_ms=a.max_turn_ms,
         )
+        if SLIDE["dropped"]:
+            print(f"  {script.stem}: 文脈が上限を超えたので、古いターンを最大 {SLIDE['dropped']} 個削った",
+                  flush=True)
+        if voice is not None:   # どの参照音声で合成したかを残す（声の偏りを後で数えられるように）
+            (out.parent / f"{script.stem}.voice.json").write_text(
+                json.dumps(voice, ensure_ascii=False, indent=1), encoding="utf-8")
+        return result
 
     if a.verify:
         # 状態の漏れと GPU の非決定性を区別するため、同一プロセス内で 2 種の比較をする。

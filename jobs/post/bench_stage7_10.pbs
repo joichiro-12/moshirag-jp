@@ -59,10 +59,10 @@ for N in 1000 4000; do
   echo
   echo "########## N=$N ##########"
 
-  t "s7_audio_$N" uv run --extra data -m moshirag_data.s07_tok_audio \
+  t "s7_audio_$N" uv run --extra data -m moshirag_data.postprocess.s07_tok_audio \
       --audio_dir "$BE/audio_$N" --output_dir "$BE/tok_audio_$N" --num_workers 8
 
-  t "s8_text_$N" uv run --extra data -m moshirag_data.s08_tok_text \
+  t "s8_text_$N" uv run --extra data -m moshirag_data.postprocess.s08_tok_text \
       --word_transcript_dir "$BE/words_$N" --output_dir "$BE/tok_text_$N" \
       --text_tokenizer_repo llm-jp/j-moshi-v1 \
       --text_tokenizer_name tokenizer_spm_32k_3.model \
@@ -70,10 +70,10 @@ for N in 1000 4000; do
       --audio_tokenizer_frame_rate 12.5 --no_whitespace_before_word \
       --num_workers 32 --allow_alignment_warnings
 
-  t "s9_ref_$N" uv run --extra data python moshirag_data/s09_ref_embed.py \
+  t "s9_ref_$N" uv run --extra data python moshirag_data/postprocess/s09_ref_embed.py \
       --ret_dir "$B/pilot5k_ret" --stems "$BE/stems$N.txt" --out "$BE/ref_$N"
 
-  t "s10_prep_$N" uv run --extra data python moshirag_data/s10_pack.py \
+  t "s10_prep_$N" uv run --extra data python moshirag_data/postprocess/s10_pack.py \
       --tokenized_text_dir "$BE/tok_text_$N" --tokenized_audio_dir "$BE/tok_audio_$N" \
       --ref_embed_dir "$BE/ref_$N" --ret_dir "$B/pilot5k_ret" \
       --stems "$BE/stems$N.txt" --ref_dim 3072 \

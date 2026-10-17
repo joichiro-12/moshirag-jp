@@ -1,0 +1,13 @@
+# 2026-10-06 の整理（ブランチ feature/refinement）で moshirag_data/ の中を 3 つに分けたときに動かしたファイル（旧パス<TAB>新パス）。
+# text_dialogue/ = テキスト対話データ作成、speech_dialogue/ = 音声対話データ作成、postprocess/ = 後処理。
+# s01 は同時に、QA を作る処理からシナリオを作る処理に置き換えた（中身が違う）。
+moshirag_data/s01c_wiki_qa.py	moshirag_data/text_dialogue/s01_scenario.py
+moshirag_data/s02_dialogue.py	moshirag_data/text_dialogue/s02_dialogue.py
+moshirag_data/s03_tts_input.py	moshirag_data/text_dialogue/s03_tts_input.py
+moshirag_data/s04_synth.py	moshirag_data/speech_dialogue/s04_synth.py
+moshirag_data/s05_align.py	moshirag_data/speech_dialogue/s05_align.py
+moshirag_data/s06_ret.py	moshirag_data/postprocess/s06_ret.py
+moshirag_data/s07_tok_audio.py	moshirag_data/postprocess/s07_tok_audio.py
+moshirag_data/s08_tok_text.py	moshirag_data/postprocess/s08_tok_text.py
+moshirag_data/s09_ref_embed.py	moshirag_data/postprocess/s09_ref_embed.py
+moshirag_data/s10_pack.py	moshirag_data/postprocess/s10_pack.py

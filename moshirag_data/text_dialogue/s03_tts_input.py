@@ -1,19 +1,11 @@
-"""行指向レコード → 音声合成の入力一式（台本 / dialogue JSON / 構造注釈）。
+"""会話記録から、音声合成の入力一式を作る。
 
-MoshiRAG-JP の会話レコードから、工程 3 以降で必要になる 3 つを作る。
+  <stem>.txt          FireRedTTS2 の台本（[S1]=人間 / [S2]=moshi）
+  <stem>.json         dialogue JSON [{"speaker": "A"|"B", "text": ...}]（A=人間 / B=moshi）
+  <stem>.struct.json  lead/body の turn index と参照文（s06 で使う）
 
-  <stem>.txt        FireRedTTS2 の台本（[S1]=人間 / [S2]=moshi）
-  <stem>.json       04_word_alignment.py 用の dialogue JSON
-                    [{"speaker": "A"|"B", "text": ...}, ...]  A=人間(L) / B=moshi(R)
-  <stem>.struct.json  lead/body/tail の境界と参照文書。<ret> 配置に使う
-
-台本では lead / body / tail を **別ターン**として出す。同一話者の連続ターンは
-butt-join されるため音声は連続した一発話になり、かつ合成 manifest から各部の onset が
-真値として取れる。struct.json はその turn index を保持し、08 側が manifest と突き合わせて
-<ret> のフレーム位置と d_lead を求める。
-
-以前は 1 ターンに結合し、境界を forced alignment で推定していた。B チャネルは 6 割以上が
-無音のため stable-ts が破綻し、真値より 34 秒ずれた（d_lead が最大 43.68 秒になった）。
+lead / body は別ターンとして出し、manifest から各部の onset を真値で取れるようにする。
+s02 で相づちを書き足した会話（JSON に "script" がある）は、その台本を使う。
 """
 
 from __future__ import annotations
@@ -38,12 +30,12 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
                 turns.append({"speaker": "B", "text": pending["body"]})
             pending = None
             return
-        # lead / body / tail を **別ターン**として台本に出す。同一話者の連続ターンは
+        # lead / body を **別ターン**として台本に出す。同一話者の連続ターンは
         # butt-join されるので音声は連続した一発話になり、かつ合成 manifest から
         # 各部の onset が真値として取れる。以前は 1 ターンに結合していたため境界を
         # forced alignment で推定する必要があり、長い無音を含むチャネルで破綻した。
         idx = {}
-        for key in ("lead", "body", "tail"):
+        for key in ("lead", "body"):
             if pending[key]:
                 turns.append({"speaker": "B", "text": pending[key]})
                 idx[key] = len(turns) - 1
@@ -51,10 +43,8 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
             struct.append({
                 "lead_turn_index": idx["lead"],
                 "body_turn_index": idx["body"],
-                "tail_turn_index": idx.get("tail"),
                 "lead": pending["lead"],
                 "body": pending["body"],
-                "tail": pending["tail"],
                 "reference": pending["reference"],
             })
         pending = None
@@ -63,10 +53,10 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
         line = line.rstrip("\n")
         if line == "(augmented)":
             flush()
-            pending = {"augmented": True, "lead": "", "body": "", "tail": "", "reference": ""}
+            pending = {"augmented": True, "lead": "", "body": "", "reference": ""}
         elif line == "(unaugmented)":
             flush()
-            pending = {"augmented": False, "lead": "", "body": "", "tail": "", "reference": ""}
+            pending = {"augmented": False, "lead": "", "body": "", "reference": ""}
         elif line.startswith("Human:"):
             flush()
             turns.append({"speaker": "A", "text": line[len("Human:"):].strip()})
@@ -79,14 +69,30 @@ def parse_record(record: list[str]) -> tuple[list[dict], list[dict]]:
         elif line.startswith("moshi (body):"):
             if pending is not None:
                 pending["body"] = line.split(":", 1)[1].strip()
-        elif line.startswith("moshi (tail):"):
-            if pending is not None:
-                t = line.split(":", 1)[1].strip()
-                pending["tail"] = "" if t == "[empty]" else t
         elif line.startswith("moshi:"):
             if pending is not None:
                 pending["body"] = line.split(":", 1)[1].strip()
     flush()
+    return turns, struct
+
+
+def parse_script(d: dict) -> tuple[list[dict], list[dict]]:
+    """s02 で相づちを書き足した台本を (台本ターン列, 構造情報) に分解する。body は最初の部分の index を指す。"""
+    script = d["script"]
+    turns = [{"speaker": s["speaker"], "text": s["text"]} for s in script]
+    struct = []
+    for k, t in enumerate(d["turns"]):
+        if not t.get("need") or t.get("body") is None:
+            continue
+        idx = {r: next(i for i, s in enumerate(script) if s["turn"] == k and s["role"] == r)
+               for r in ("lead", "body")}
+        struct.append({
+            "lead_turn_index": idx["lead"],
+            "body_turn_index": idx["body"],
+            "lead": t["lead"],
+            "body": t["body"],
+            "reference": t["reference"],
+        })
     return turns, struct
 
 
@@ -102,7 +108,7 @@ def main(args: argparse.Namespace) -> None:
     n_ok = n_aug = 0
     for f in files:
         d = json.loads(f.read_text(encoding="utf-8"))
-        turns, struct = parse_record(d["record"])
+        turns, struct = parse_script(d) if "script" in d else parse_record(d["record"])
         if not turns:
             continue
         stem = f.stem
@@ -127,8 +133,11 @@ def main(args: argparse.Namespace) -> None:
                 "chunks": d.get("chunks", []),
                 "greeting_lines": d.get("greeting_lines"),
                 "code_commit": d.get("code_commit", ""),
+                "user_gender": d.get("persona", {}).get("性別"),   # s04 でユーザの参照音声を選ぶ
                 "n_turns": len(turns),
                 "augmented": struct,
+                "backchannel_turn_indices": [i for i, s in enumerate(d.get("script", []))
+                                             if s["role"] == "backchannel"],
             }, ensure_ascii=False, indent=1),
             encoding="utf-8",
         )

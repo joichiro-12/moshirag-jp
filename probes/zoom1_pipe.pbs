@@ -21,7 +21,7 @@ echo "===== $(date) $(hostname) ====="; nvidia-smi --query-gpu=name --format=csv
 rm -rf "$P"; mkdir -p "$P"/{in,audio,ret}
 
 echo "===== 1) レコード -> 台本（lead/body/tail を別ターン）====="
-uv run --extra data python moshirag_data/s03_tts_input.py \
+uv run --extra data python moshirag_data/text_dialogue/s03_tts_input.py \
     --input_dir data/moshirag_jp/pilot5k --output_dir "$P/in" --limit 8
 
 echo "===== 2) zoom1-dialogue-tts で合成 ====="
@@ -38,7 +38,7 @@ ls "$P"/audio | head -8
 
 echo "===== 3) manifest から <ret> 配置 ====="
 cd "$PBS_O_WORKDIR"
-uv run --no-project python moshirag_data/s06_ret.py \
+uv run --no-project python moshirag_data/postprocess/s06_ret.py \
     --manifest_dir "$P/audio" --struct_dir "$P/in" --output_dir "$P/ret"
 
 echo "===== manifest の構造 ====="
