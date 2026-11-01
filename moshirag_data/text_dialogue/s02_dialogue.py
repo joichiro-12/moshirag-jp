@@ -212,7 +212,7 @@ def render_history(hist: list[tuple[str, str]]) -> str:
 
 
 def parse_ref(out: str) -> tuple[str, list[str]]:
-    """02-2 の出力から（参照チャンク, 根拠）を取り出す。根拠は「記事」「知識」「推論」の部分集合。
+    """02-2 の出力から（参照チャンク, 根拠）を取り出す。根拠は「会話」「記事」「知識」「推論」「想定」「作文」の部分集合。
     根拠の行が無くても参照チャンクは使う（根拠は分析用の記録なので）。"""
     ref, basis = "", []
     for raw in out.splitlines():
@@ -221,19 +221,52 @@ def parse_ref(out: str) -> tuple[str, list[str]]:
             continue
         if line.startswith(("根拠:", "根拠：")):
             v = line[3:]
-            basis = [b for b in ("記事", "知識", "推論") if b in v]
+            basis = [b for b in ("会話", "記事", "知識", "推論", "想定", "作文") if b in v]
         elif not ref:
             ref = strip_label(line, "参照チャンク", "参照")
     return ref, basis
 
 
 def parse_need(out: str) -> str:
-    """「要」「不要」「聞き返し」のどれかを返す。"""
+    """「要」「不要」「聞き返し」のどれかを返す（「要：考える」のように型が付いていても「要」）。"""
     s = first_line(strip_label(out, "判定"))
     for v in ("聞き返し", "不要", "要"):   # 「不要」は「要」を含むので先に見る
         if v in s:
             return v
     raise RuntimeError(f"検索の要否を解釈できない: {out[:60]}")
+
+
+# 02 で「要」のときの型（prompts/02_need.txt）。分析用の記録で、後の工程は使わない
+NEED_KINDS = ("事実", "今の情報", "調べて", "考える", "読解")
+
+
+def parse_need_kind(out: str) -> str:
+    """「要：考える」から型を取り出す。型が書かれていなければ空。"""
+    s = first_line(strip_label(out, "判定"))
+    return next((k for k in NEED_KINDS if k in s), "")
+
+
+# 読解（user goal）でユーザ役が読み上げる記事の一節の長さ（字）。JaQuAD の文脈の段落と同じくらい
+PASSAGE_MIN, PASSAGE_MAX = 120, 400
+
+
+def pick_passage(article: str, key) -> str:
+    """記事から、読み上げる一節を 1 つ選ぶ。PASSAGE_MIN〜PASSAGE_MAX 字の段落があればその中から、無ければ
+    続く文をつないで作る。key（記事の ID）で決まるので、再開しても同じになる。作れなければ空。"""
+    rng = random.Random(f"passage-{key}")
+    paras = [p.strip() for p in article.split("\n") if PASSAGE_MIN <= len(p.strip()) <= PASSAGE_MAX]
+    if paras:
+        return rng.choice(paras)
+    sents = [s.strip() + "。" for s in article.replace("\n", "").split("。") if s.strip()]
+    for start in ((rng.randrange(len(sents)), 0) if sents else ()):
+        out = ""
+        for s in sents[start:]:
+            if len(out) + len(s) > PASSAGE_MAX:
+                break
+            out += s
+        if len(out) >= PASSAGE_MIN:
+            return out
+    return ""
 
 
 def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
@@ -243,6 +276,10 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=USER_GOALS[goal]["end_condition"],
                                 spoken_style=SPOKEN_STYLE)
     user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\nシナリオ:\n{scenario_txt}\n"
+    # 読解：記事の一節をユーザ役に渡し、読み上げて質問させる（02-2 は会話に出た文章から答えを作る）
+    passage = pick_passage(article, sc["wiki_id"]) if goal == "読解" else ""
+    if passage:
+        user_head += f"読み上げる文章: {passage}\n"
     need_sys = NEED_ROLE.format(knowledge=MOSHI_KNOWLEDGE)
     lead_sys = LEAD_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE, fillers=render_fillers())
     body_sys = BODY_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE)
@@ -286,6 +323,8 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             verdict = parse_need(need_raw)
             turn["need"] = verdict == "要"
             turn["need_raw"] = need_raw
+            if turn["need"]:
+                turn["need_kind"] = parse_need_kind(need_raw)
             if verdict == "聞き返し":   # 検索せず、何のことかを聞き返す
                 turn.update(clarify=True, reply_rule=CLARIFY_RULE)
             elif rule:
@@ -366,6 +405,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "user_goal": goal,
         "opening": opening,
         "scenario": sc["scenario"],
+        "passage": passage,                   # 読解で読み上げた記事の一節（それ以外は空）
         "article_chars": len(article),
         "chunks": [t["reference"] for t in turns if t.get("need")],   # s03 が struct.json に写す
         "turns": turns,
