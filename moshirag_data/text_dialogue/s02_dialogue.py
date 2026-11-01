@@ -59,6 +59,12 @@ OPENINGS: dict = load_constant("openings.json")
 # 02 で「聞き返し」と判定したときの応じ方：constants/moshi_reply_rules.json
 CLARIFY_RULE: str = load_constant("moshi_reply_rules.json")["聞き返し"]
 
+# 2 発話目以降の形：constants/followup_forms.json。キーは形の名前
+#   p: 直前の往復でモシが応じたとき（聞き返しを除く）、次のユーザ発話にこの形を渡す確率
+#   user: 01 に渡す指定。最初の発話の形と同じく、言い方だけを決める
+# 短い追加の質問は、指定しないとほとんど出ない（2026-11-02 の試作 10 会話で 0 件）
+FOLLOWUP_FORMS: dict = load_constant("followup_forms.json")
+
 
 def sample_opening(rng: random.Random) -> str:
     names = list(OPENINGS)
@@ -211,24 +217,31 @@ def render_history(hist: list[tuple[str, str]]) -> str:
     return "\n".join(f"{SPEAKER[w]}: {t}" for w, t in hist) or "（まだ無い）"
 
 
+_BULLET = re.compile(r"^(?:[-・*●]|\d+[.．、)）])\s*")   # 一覧の行頭の記号・番号
+
+
 def parse_ref(out: str) -> tuple[str, list[str]]:
-    """02-2 の出力から（参照チャンク, 根拠）を取り出す。根拠は「記事」「知識」「推論」の部分集合。
-    根拠の行が無くても参照チャンクは使う（根拠は分析用の記録なので）。"""
-    ref, basis = "", []
+    """02-2 の出力から（参照チャンク, 根拠）を取り出す。根拠は「会話」「記事」「知識」「推論」「想定」「作文」の部分集合。
+    根拠の行が無くても参照チャンクは使う（根拠は分析用の記録なので）。参照チャンクが一覧などで何行かに分かれていたら、
+    根拠の行までを 1 行につなぐ（1 行目だけを取ると「…は以下の通り。」で切れる。2026-11-02 の試作）。"""
+    lines, basis = [], []
     for raw in out.splitlines():
         line = raw.strip()
         if not line:
             continue
         if line.startswith(("根拠:", "根拠：")):
             v = line[3:]
-            basis = [b for b in ("記事", "知識", "推論") if b in v]
-        elif not ref:
-            ref = strip_label(line, "参照チャンク", "参照")
+            basis = [b for b in ("会話", "記事", "知識", "推論", "想定", "作文") if b in v]
+            break
+        lines.append(_BULLET.sub("", line) if lines else strip_label(line, "参照チャンク", "参照"))
+    ref = ""
+    for x in lines:
+        ref += x if not ref or ref.endswith(("。", "、")) else "、" + x
     return ref, basis
 
 
 def parse_need(out: str) -> str:
-    """「要」「不要」「聞き返し」のどれかを返す。"""
+    """「要」「不要」「聞き返し」のどれかを返す（「要：考える」のように型が付いていても「要」）。"""
     s = first_line(strip_label(out, "判定"))
     for v in ("聞き返し", "不要", "要"):   # 「不要」は「要」を含むので先に見る
         if v in s:
@@ -236,13 +249,58 @@ def parse_need(out: str) -> str:
     raise RuntimeError(f"検索の要否を解釈できない: {out[:60]}")
 
 
+# 02 で「要」のときの型（prompts/02_need.txt）。分析用の記録で、後の工程は使わない
+NEED_KINDS = ("事実", "今の情報", "調べて", "考える", "読解")
+
+
+def parse_need_kind(out: str) -> str:
+    """「要：考える」から型を取り出す。型が書かれていなければ空。"""
+    s = first_line(strip_label(out, "判定"))
+    return next((k for k in NEED_KINDS if k in s), "")
+
+
+# 読解（user goal）でユーザ役が読み上げる記事の一節の長さ（字）。JaQuAD の文脈の段落と同じくらい
+PASSAGE_MIN, PASSAGE_MAX = 120, 400
+
+
+def pick_passage(article: str, key) -> str:
+    """記事から、読み上げる一節を 1 つ選ぶ。PASSAGE_MIN〜PASSAGE_MAX 字の段落があればその中から、無ければ
+    続く文をつないで作る。key（記事の ID）で決まるので、再開しても同じになる。作れなければ空。"""
+    rng = random.Random(f"passage-{key}")
+    paras = [p.strip() for p in article.split("\n") if PASSAGE_MIN <= len(p.strip()) <= PASSAGE_MAX]
+    if paras:
+        return rng.choice(paras)
+    sents = [s.strip() + "。" for s in article.replace("\n", "").split("。") if s.strip()]
+    for start in ((rng.randrange(len(sents)), 0) if sents else ()):
+        out = ""
+        for s in sents[start:]:
+            if len(out) + len(s) > PASSAGE_MAX:
+                break
+            out += s
+        if len(out) >= PASSAGE_MIN:
+            return out
+    return ""
+
+
 def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     persona_txt = render_persona(sc["persona"])
     scenario_txt = render_scenario(sc["scenario"])
     goal = sc["user_goal"]
-    user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=USER_GOALS[goal]["end_condition"],
+    goal_def = USER_GOALS[goal]
+    user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=goal_def["end_condition"],
                                 spoken_style=SPOKEN_STYLE)
-    user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\nシナリオ:\n{scenario_txt}\n"
+    # 目的ごとの話し方（user_goals.json の user_rule）は、その目的が選ばれた会話のユーザ役にだけ渡す
+    user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\n"
+    if goal_def.get("user_rule"):
+        user_head += f"この目的での話し方: {goal_def['user_rule']}\n"
+    user_head += f"シナリオ:\n{scenario_txt}\n"
+    # passage が true の目的（読解）：記事の一節をユーザ役に渡し、読み上げて質問させる（02-2 は会話に出た文章から答えを作る）
+    passage = ""
+    if goal_def.get("passage"):
+        passage = pick_passage(article, sc["wiki_id"])
+        if not passage:
+            raise RuntimeError("読み上げる一節を記事から作れない")
+        user_head += f"読み上げる文章: {passage}\n"
     need_sys = NEED_ROLE.format(knowledge=MOSHI_KNOWLEDGE)
     lead_sys = LEAD_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE, fillers=render_fillers())
     body_sys = BODY_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE)
@@ -253,8 +311,16 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     script: list[dict] = []            # 相づちを書き足した台本（04）
     ended = False
     for k in range(args.max_turns):
-        # ---- 01 ユーザ発話：シナリオ・会話履歴（最初だけ話し始めの形を指定）--------------
-        form = f"最初の発話の形: {opening}（{OPENINGS[opening]['user']}）\n" if k == 0 else ""
+        # ---- 01 ユーザ発話：シナリオ・会話履歴（最初は話し始めの形、2 発話目以降はときどき決めた形を指定）-------
+        form, form_name = "", ""
+        if k == 0:
+            form = f"最初の発話の形: {opening}（{OPENINGS[opening]['user']}）\n"
+        elif turns[-1].get("body") is not None and not turns[-1].get("clarify"):
+            rng = random.Random(f"form-{sc['wiki_id']}-{k}")   # 記事と往復の番号で決まる（再開しても同じ）
+            for name, f_ in FOLLOWUP_FORMS.items():
+                if rng.random() < f_["p"]:
+                    form, form_name = f"この発話の形: {name}（{f_['user']}）\n", name
+                    break
         u = first_line(call(client, model, user_sys,
                             f"{user_head}{form}ここまでの会話:\n{render_history(hist)}\n人:",
                             args.effort_user))
@@ -265,13 +331,15 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             if k >= args.min_turns:
                 ended = True
                 if u:
-                    turns.append({"user": u})
+                    turns.append({"user": u, **({"user_form": form_name} if form_name else {})})
                     hist.append(("user", u))
                 break
         if not u:
             break
         hist.append(("user", u))
         turn = {"user": u}
+        if form_name:
+            turn["user_form"] = form_name
 
         # ---- 02 検索の要否：会話履歴・知識の範囲 --------------------------------------
         # 最初の応答は話し始めのパターンの応じ方に従う。search が false のパターン（挨拶だけ・雑談など）は
@@ -286,6 +354,8 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             verdict = parse_need(need_raw)
             turn["need"] = verdict == "要"
             turn["need_raw"] = need_raw
+            if turn["need"]:
+                turn["need_kind"] = parse_need_kind(need_raw)
             if verdict == "聞き返し":   # 検索せず、何のことかを聞き返す
                 turn.update(clarify=True, reply_rule=CLARIFY_RULE)
             elif rule:
@@ -366,6 +436,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "user_goal": goal,
         "opening": opening,
         "scenario": sc["scenario"],
+        "passage": passage,                   # 読解で読み上げた記事の一節（それ以外は空）
         "article_chars": len(article),
         "chunks": [t["reference"] for t in turns if t.get("need")],   # s03 が struct.json に写す
         "turns": turns,

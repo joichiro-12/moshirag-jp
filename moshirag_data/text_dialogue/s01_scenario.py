@@ -96,12 +96,15 @@ def main():
         user_persona = persona.sample_persona(rng)
         goal = persona.sample_user_goal(rng)
         article = texts[r["wiki_id"]]
+        # 目的ごとのシナリオの書き方（user_goals.json の scenario_rule）は、その目的が選ばれたときだけ渡す
+        rule = persona.USER_GOALS[goal].get("scenario_rule")
         try:
             out = llm.call(client, a.model,
                            SCENARIO_ROLE.format(moshi=persona.MOSHI_NAME_ROLE,
                                                 goal=persona.USER_GOALS[goal]["goal"]),
                            f"記事タイトル: {r['title']}\n記事: {article}\n"
-                           f"人物: {persona.render_persona(user_persona)}\nユーザの目的: {goal}\n",
+                           f"人物: {persona.render_persona(user_persona)}\nユーザの目的: {goal}\n"
+                           + (f"この目的でのシナリオの書き方: {rule}\n" if rule else ""),
                            a.effort)
         except Exception as e:  # noqa: BLE001
             return f"FAIL {e}", None

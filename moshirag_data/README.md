@@ -73,8 +73,9 @@ Moshi は固定の声。ユーザはシナリオの性別（s03 が `struct.json
 | `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`・`04_backchannel.txt`） |
 | `constants/moshi_persona.json` | Moshi のペルソナ |
 | `constants/user_persona.json` | ユーザのペルソナの候補と、年齢層の重み |
-| `constants/user_goals.json` | ユーザの目的と終了条件 |
+| `constants/user_goals.json` | ユーザの目的と終了条件。目的によっては、その目的のときだけ渡す指示（`scenario_rule`・`user_rule`）と、記事の一節を読み上げるか（`passage`） |
 | `constants/openings.json` | 話し始めのパターンと、Moshi の最初の応じ方 |
+| `constants/followup_forms.json` | 2 発話目以降にときどき指定する発話の形（短い追加の質問）と、その確率 |
 | `constants/fillers.json` | lead で使うフィラー |
 | `constants/spoken_style.json` | 発話の書き方 |
 | `constants/moshi_reply_rules.json` | 聞き返しなどの応じ方 |
