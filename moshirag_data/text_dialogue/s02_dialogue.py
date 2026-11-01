@@ -59,6 +59,12 @@ OPENINGS: dict = load_constant("openings.json")
 # 02 で「聞き返し」と判定したときの応じ方：constants/moshi_reply_rules.json
 CLARIFY_RULE: str = load_constant("moshi_reply_rules.json")["聞き返し"]
 
+# 2 発話目以降の形：constants/followup_forms.json。キーは形の名前
+#   p: 直前の往復でモシが応じたとき（聞き返しを除く）、次のユーザ発話にこの形を渡す確率
+#   user: 01 に渡す指定。最初の発話の形と同じく、言い方だけを決める
+# 短い追加の質問は、指定しないとほとんど出ない（2026-11-02 の試作 10 会話で 0 件）
+FOLLOWUP_FORMS: dict = load_constant("followup_forms.json")
+
 
 def sample_opening(rng: random.Random) -> str:
     names = list(OPENINGS)
@@ -211,10 +217,14 @@ def render_history(hist: list[tuple[str, str]]) -> str:
     return "\n".join(f"{SPEAKER[w]}: {t}" for w, t in hist) or "（まだ無い）"
 
 
+_BULLET = re.compile(r"^(?:[-・*●]|\d+[.．、)）])\s*")   # 一覧の行頭の記号・番号
+
+
 def parse_ref(out: str) -> tuple[str, list[str]]:
     """02-2 の出力から（参照チャンク, 根拠）を取り出す。根拠は「会話」「記事」「知識」「推論」「想定」「作文」の部分集合。
-    根拠の行が無くても参照チャンクは使う（根拠は分析用の記録なので）。"""
-    ref, basis = "", []
+    根拠の行が無くても参照チャンクは使う（根拠は分析用の記録なので）。参照チャンクが一覧などで何行かに分かれていたら、
+    根拠の行までを 1 行につなぐ（1 行目だけを取ると「…は以下の通り。」で切れる。2026-11-02 の試作）。"""
+    lines, basis = [], []
     for raw in out.splitlines():
         line = raw.strip()
         if not line:
@@ -222,8 +232,11 @@ def parse_ref(out: str) -> tuple[str, list[str]]:
         if line.startswith(("根拠:", "根拠：")):
             v = line[3:]
             basis = [b for b in ("会話", "記事", "知識", "推論", "想定", "作文") if b in v]
-        elif not ref:
-            ref = strip_label(line, "参照チャンク", "参照")
+            break
+        lines.append(_BULLET.sub("", line) if lines else strip_label(line, "参照チャンク", "参照"))
+    ref = ""
+    for x in lines:
+        ref += x if not ref or ref.endswith(("。", "、")) else "、" + x
     return ref, basis
 
 
@@ -298,8 +311,16 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     script: list[dict] = []            # 相づちを書き足した台本（04）
     ended = False
     for k in range(args.max_turns):
-        # ---- 01 ユーザ発話：シナリオ・会話履歴（最初だけ話し始めの形を指定）--------------
-        form = f"最初の発話の形: {opening}（{OPENINGS[opening]['user']}）\n" if k == 0 else ""
+        # ---- 01 ユーザ発話：シナリオ・会話履歴（最初は話し始めの形、2 発話目以降はときどき決めた形を指定）-------
+        form, form_name = "", ""
+        if k == 0:
+            form = f"最初の発話の形: {opening}（{OPENINGS[opening]['user']}）\n"
+        elif turns[-1].get("body") is not None and not turns[-1].get("clarify"):
+            rng = random.Random(f"form-{sc['wiki_id']}-{k}")   # 記事と往復の番号で決まる（再開しても同じ）
+            for name, f_ in FOLLOWUP_FORMS.items():
+                if rng.random() < f_["p"]:
+                    form, form_name = f"この発話の形: {name}（{f_['user']}）\n", name
+                    break
         u = first_line(call(client, model, user_sys,
                             f"{user_head}{form}ここまでの会話:\n{render_history(hist)}\n人:",
                             args.effort_user))
@@ -310,13 +331,15 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             if k >= args.min_turns:
                 ended = True
                 if u:
-                    turns.append({"user": u})
+                    turns.append({"user": u, **({"user_form": form_name} if form_name else {})})
                     hist.append(("user", u))
                 break
         if not u:
             break
         hist.append(("user", u))
         turn = {"user": u}
+        if form_name:
+            turn["user_form"] = form_name
 
         # ---- 02 検索の要否：会話履歴・知識の範囲 --------------------------------------
         # 最初の応答は話し始めのパターンの応じ方に従う。search が false のパターン（挨拶だけ・雑談など）は
