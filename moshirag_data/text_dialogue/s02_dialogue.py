@@ -273,12 +273,20 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     persona_txt = render_persona(sc["persona"])
     scenario_txt = render_scenario(sc["scenario"])
     goal = sc["user_goal"]
-    user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=USER_GOALS[goal]["end_condition"],
+    goal_def = USER_GOALS[goal]
+    user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=goal_def["end_condition"],
                                 spoken_style=SPOKEN_STYLE)
-    user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\nシナリオ:\n{scenario_txt}\n"
-    # 読解：記事の一節をユーザ役に渡し、読み上げて質問させる（02-2 は会話に出た文章から答えを作る）
-    passage = pick_passage(article, sc["wiki_id"]) if goal == "読解" else ""
-    if passage:
+    # 目的ごとの話し方（user_goals.json の user_rule）は、その目的が選ばれた会話のユーザ役にだけ渡す
+    user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\n"
+    if goal_def.get("user_rule"):
+        user_head += f"この目的での話し方: {goal_def['user_rule']}\n"
+    user_head += f"シナリオ:\n{scenario_txt}\n"
+    # passage が true の目的（読解）：記事の一節をユーザ役に渡し、読み上げて質問させる（02-2 は会話に出た文章から答えを作る）
+    passage = ""
+    if goal_def.get("passage"):
+        passage = pick_passage(article, sc["wiki_id"])
+        if not passage:
+            raise RuntimeError("読み上げる一節を記事から作れない")
         user_head += f"読み上げる文章: {passage}\n"
     need_sys = NEED_ROLE.format(knowledge=MOSHI_KNOWLEDGE)
     lead_sys = LEAD_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE, fillers=render_fillers())

@@ -49,7 +49,9 @@ JOBS: dict = _USER["職業"]["年齢層ごと"]
 JOBS_DEFAULT: list = _USER["職業"]["その他の年齢層"]
 KNOWLEDGE: list = _USER["前提知識"]
 
-# ユーザの目的（user goal）：会話全体の目的 goal（0 に見せる）と終了条件 end_condition（01 に見せる）と出現の重み weight
+# ユーザの目的（user goal）：会話全体の目的 goal（0 に見せる）と終了条件 end_condition（01 に見せる）と出現の重み weight。
+# 目的によっては、目的ごとの指示 scenario_rule（0）・user_rule（01）と、記事の一節を読み上げるか passage（01）を持つ。
+# 指示と一節は、その目的が選ばれた会話にだけ渡す（共通のプロンプトには目的ごとのことを書かない）
 USER_GOALS: dict = load_constant("user_goals.json")
 
 
