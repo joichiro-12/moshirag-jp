@@ -73,7 +73,7 @@ Moshi は固定の声。ユーザはシナリオの性別（s03 が `struct.json
 | `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`0_scenario_task.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`・`04_backchannel.txt`）。`0_scenario_task.txt` は記事を使わないシナリオ用 |
 | `constants/moshi_persona.json` | Moshi のペルソナ |
 | `constants/user_persona.json` | ユーザのペルソナの候補と、年齢層の重み |
-| `constants/user_goals.json` | ユーザの目的と終了条件。目的によっては、その目的のときだけ渡す指示（`scenario_rule`・`user_rule`）と、記事の一節を読み上げるか（`passage`）と、最初の発話の形の候補（`openings`） |
+| `constants/user_goals.json` | ユーザの目的と終了条件。目的によっては、その目的のときだけ渡す指示（`scenario_rule`・`user_rule`）と、記事の一節を読み上げるか（`passage`）と、最初の発話の形の候補（`openings`）と、最初の用件の長さの候補（`first_lengths`） |
 | `constants/task_seeds.json` | 記事を使わないシナリオ（s01 の `--source tasks`）の種にする、依頼の種類と場面 |
 | `constants/openings.json` | 話し始めのパターンと、Moshi の最初の応じ方 |
 | `constants/followup_forms.json` | 2 発話目以降にときどき指定する発話の形（短い追加の質問）と、その確率 |

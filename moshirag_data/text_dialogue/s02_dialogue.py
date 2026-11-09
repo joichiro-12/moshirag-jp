@@ -288,12 +288,19 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     scenario_txt = render_scenario(sc["scenario"])
     goal = sc["user_goal"]
     goal_def = USER_GOALS[goal]
+    sid = sc.get("wiki_id") or sc["task_id"]   # 乱数の種に使う会話の元の ID（記事か、依頼の種）
     user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=goal_def["end_condition"],
                                 spoken_style=SPOKEN_STYLE)
     # 目的ごとの話し方（user_goals.json の user_rule）は、その目的が選ばれた会話のユーザ役にだけ渡す
     user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\n"
     if goal_def.get("user_rule"):
         user_head += f"この目的での話し方: {goal_def['user_rule']}\n"
+    # 目的に first_lengths があれば、最初の用件の長さを会話ごとに選んで渡す（長さを指定しないと LLM は長めに寄る）
+    first_length = ""
+    if goal_def.get("first_lengths"):
+        fl = goal_def["first_lengths"]
+        first_length = random.Random(f"length-{sid}").choices(list(fl), weights=[fl[n]["weight"] for n in fl])[0]
+        user_head += f"最初の用件の長さ: {fl[first_length]['length']}\n"
     user_head += f"シナリオ:\n{scenario_txt}\n"
     # passage が true の目的（読解）：記事の一節をユーザ役に渡し、読み上げて質問させる（02-2 は会話に出た文章から答えを作る）
     passage = ""
@@ -307,7 +314,6 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     body_sys = BODY_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE)
     # 記事を使わないシナリオ（s01 の --source tasks）は、02-2 に記事を渡さず、会話・知識・推論から作らせる
     ref_head = f"記事タイトル: {sc['title']}\n記事: {article}\n" if article else "記事: なし（この会話は記事を使わない）\n"
-    sid = sc.get("wiki_id") or sc["task_id"]   # 乱数の種に使う会話の元の ID（記事か、依頼の種）
 
     hist: list[tuple[str, str]] = []   # 会話はユーザから始める
     turns: list[dict] = []
@@ -440,6 +446,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "persona": sc["persona"],
         "user_goal": goal,
         "opening": opening,
+        "first_length": first_length,         # 最初の用件の長さの指定（first_lengths のある目的だけ）
         "scenario": sc["scenario"],
         "passage": passage,                   # 読解で読み上げた記事の一節（それ以外は空）
         "article_chars": len(article),

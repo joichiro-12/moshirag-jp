@@ -51,7 +51,8 @@ KNOWLEDGE: list = _USER["前提知識"]
 
 # ユーザの目的（user goal）：会話全体の目的 goal（0 に見せる）と終了条件 end_condition（01 に見せる）と出現の重み weight。
 # 目的によっては、目的ごとの指示 scenario_rule（0）・user_rule（01）と、記事の一節を読み上げるか passage（01）と、
-# 最初の発話の形の候補 openings（01。openings.json の名前。無ければすべての形から選ぶ）を持つ。
+# 最初の発話の形の候補 openings（01。openings.json の名前。無ければすべての形から選ぶ）と、
+# 最初の用件の長さの候補 first_lengths（01。会話ごとに重みで 1 つ選んで渡す）を持つ。
 # 指示と一節は、その目的が選ばれた会話にだけ渡す（共通のプロンプトには目的ごとのことを書かない）
 USER_GOALS: dict = load_constant("user_goals.json")
 
