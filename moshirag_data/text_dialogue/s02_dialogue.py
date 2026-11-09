@@ -118,6 +118,21 @@ MOSHI_BACKCHANNELS = {"はい", "ええ", "はいはい", "なるほど", "へ�
                       "そうなんですね", "そうなんです"}
 _NOT_COUNTED = re.compile(r"[、。？！…\s]")
 
+# 依頼に答える本題が予告だけ（「作りますね」「では、始めます」で、作ったものの中身を言わない）なら作り直す。
+# 目安：要：考える のターンで、本題が ANNOUNCE_MAX_BODY 字未満、参照チャンクが ANNOUNCE_MIN_REF 字以上（どちらも
+# _NOT_COUNTED を除く）、本題が予告の言い回しで終わる。プロンプトで禁じても、依頼が「お願いできる？」で終わると
+# 「できますよ」だけで止まることがある（試作で 12 会話のうち 3）
+ANNOUNCE_MAX_BODY, ANNOUNCE_MIN_REF, ANNOUNCE_RETRIES = 40, 50, 2
+_ANNOUNCE_CUE = re.compile(r"(ますね|ましょう|ましょうか|ますよ|てみました|ください|いいですか|始めます|いきます|いきますね)[。！？!?]*$")
+ANNOUNCE_NOTE = ("注意: 予告だけで終えない。参照チャンクにある中身（作ったもの・挙げた案・最初の問い など）を、"
+                 "この発話で話す。「できますよ」「作りますね」だけで終えない\n")
+
+
+def is_announce_only(turn: dict, body: str) -> bool:
+    return (turn.get("need_kind") == "考える" and len(_NOT_COUNTED.sub("", body)) < ANNOUNCE_MAX_BODY
+            and len(_NOT_COUNTED.sub("", turn.get("reference", ""))) >= ANNOUNCE_MIN_REF
+            and bool(_ANNOUNCE_CUE.search(body.strip())))
+
 
 def turn_lines(k: int, t: dict) -> list[dict]:
     """1 往復を台本の行にする。turn は s02 のターンの index。"""
@@ -394,10 +409,17 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             q += f"モシ（話し始めている前置き）: {lead}\n"
         body = first_line(call(client, model, body_sys, q + "続き:", args.effort_body))
         body = strip_label(body, "続き", "モシ")
+        turn["reference"] = ref   # is_announce_only が見る
+        # 予告だけの本題は、注意を足して ANNOUNCE_RETRIES 回まで作り直す（直らなければ印を残して使う）
+        retries = 0
+        while body and is_announce_only(turn, body) and retries < ANNOUNCE_RETRIES:
+            retries += 1
+            body = strip_label(first_line(call(client, model, body_sys, q + ANNOUNCE_NOTE + "続き:",
+                                               args.effort_body)), "続き", "モシ")
         if not body:
             raise RuntimeError("モシの応答が空")
         turn.update(lead=lead, reference=ref, body=body, ref_has_unknown="不明" in ref,
-                    ref_basis=basis)
+                    ref_basis=basis, body_retries=retries, body_announce_only=is_announce_only(turn, body))
 
         # ---- 04 相づち：相づち込みの会話履歴・この往復の発話 ----------------------------------
         # 失敗しても会話は作り直さず、この往復は相づち無しにする
