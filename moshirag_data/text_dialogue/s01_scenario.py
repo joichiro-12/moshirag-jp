@@ -4,6 +4,16 @@
 出力の各行: {"wiki_id": ..., "title": ..., "url": ..., "index": ..., "source": "ja_wiki",
             "article_chars": ..., "persona": {...}, "user_goal": "...", "scenario": {...}}
 
+--source tasks では記事を使わず、constants/task_seeds.json の依頼の種類と場面からシナリオを作る。
+出力の各行: {"wiki_id": null, "task_id": "task_000000", "title": 依頼の種類, "url": null, "index": ...,
+            "source": "tasks", "task": {"種類": ..., "場面": ...}, "article_chars": 0, "persona": {...},
+            "user_goal": "...", "scenario": {...}}
+目的は --goals で絞る（既定は 長い依頼・作業依頼）。読み上げる一節が要る目的（読解）は使えない。
+
+    $VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py --source tasks \
+        --output_file data/moshirag_jp/task_scenario.jsonl --num_samples 10000 \
+        --goals 長い依頼,作業依頼 --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
+
 Usage:
     $VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py \
         --wiki_dir /groups/gcg51557/experiments/0118_dedup_corpusv4_ja/data/all/cleaned/ja_wiki \
@@ -11,17 +21,26 @@ Usage:
         --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
 """
 from __future__ import annotations
-import argparse, json, os, random, threading
+import argparse, json, os, random, re, threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
-
-from openai import OpenAI
 
 from libs import llm, persona, wiki
 
 SCENARIO_KEYS = ["状況", "最初の関心", "派生しうる関心", "なぜ関心があるのか"]
 
 SCENARIO_ROLE = persona.load_prompt("0_scenario.txt")
+# 記事を使わないシナリオ（--source tasks）：依頼の種類と場面を種にする
+TASK_SCENARIO_ROLE = persona.load_prompt("0_scenario_task.txt")
+TASK_SEEDS: dict = persona.load_constant("task_seeds.json")
+TASK_DEFAULT_GOALS = ["長い依頼", "作業依頼"]
+
+
+def sample_task(rng: random.Random) -> tuple[str, str]:
+    """依頼の種類（重みで）と場面（同じ確率で）を選ぶ。"""
+    kinds = TASK_SEEDS["依頼の種類"]
+    kind = rng.choices(list(kinds), weights=[kinds[k]["weight"] for k in kinds])[0]
+    return kind, rng.choice(TASK_SEEDS["場面"])
 
 
 def parse(out: str) -> dict | None:
@@ -39,11 +58,16 @@ def parse(out: str) -> dict | None:
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--wiki_dir", required=True, help="ja_wiki の *.jsonl.gz を置いたディレクトリ")
+    ap.add_argument("--source", choices=["wiki", "tasks"], default="wiki",
+                    help="wiki：記事からシナリオを作る。tasks：記事を使わず、依頼の種類と場面から作る")
+    ap.add_argument("--goals", default="",
+                    help="この目的の中だけから選ぶ（カンマ区切り、重みは user_goals.json のまま）。"
+                         "空なら、wiki ではすべての目的、tasks では " + "・".join(TASK_DEFAULT_GOALS))
+    ap.add_argument("--wiki_dir", default=None, help="ja_wiki の *.jsonl.gz を置いたディレクトリ（--source wiki で要る）")
     ap.add_argument("--article_chars", type=int, default=6000,
                     help="LLM に渡す本文の長さ（先頭から）。s02 の 02-2 も同じ長さで切る")
     ap.add_argument("--output_file", required=True)
-    ap.add_argument("--num_samples", type=int, default=0, help="0 で全件")
+    ap.add_argument("--num_samples", type=int, default=0, help="0 で全件（--source tasks では作る件数で、要る）")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--shard", type=int, default=0)
     ap.add_argument("--nshard", type=int, default=1)
@@ -54,20 +78,41 @@ def main():
     ap.add_argument("--api_key", default=None)
     a = ap.parse_args()
 
+    goals = [g.strip() for g in re.split(r"[,、]", a.goals) if g.strip()] or None
+    if a.source == "tasks":
+        goals = goals or TASK_DEFAULT_GOALS
+    unknown = [g for g in goals or [] if g not in persona.USER_GOALS]
+    if unknown:
+        raise SystemExit(f"user_goals.json に無い目的: {unknown}")
+    if a.source == "tasks":
+        # 読解のように記事の一節を読み上げる目的は、記事が無いと作れない
+        need_article = [g for g in goals if persona.USER_GOALS[g].get("passage")]
+        if need_article:
+            raise SystemExit(f"--source tasks では、記事の一節が要る目的は使えない: {need_article}")
+        if not a.num_samples:
+            raise SystemExit("--source tasks では --num_samples（作る件数）が要る")
+    elif not a.wiki_dir:
+        raise SystemExit("--source wiki では --wiki_dir が要る")
+
+    from openai import OpenAI
     client = OpenAI(api_key=a.api_key or os.getenv("OPENAI_API_KEY") or "dummy",
                     base_url=a.llm_base_url or None)
 
-    # 1 周目は記事の ID とタイトルだけを持ち、本文は担当分だけ 2 周目で読む
-    # （全記事の本文を持つとメモリが足りなくなる）
-    rows = [{"wiki_id": d["meta"].get("id"), "title": d["meta"].get("title", ""),
-             "url": d["meta"].get("url")} for d in wiki.iter_wiki(a.wiki_dir)]
-    # 乱数種のみでシャッフルし前方を切る。件数を増やしても既存分が活きる
-    random.Random(a.seed).shuffle(rows)
-    if a.num_samples:
-        rows = rows[: a.num_samples]
+    if a.source == "tasks":
+        # 種は会話ごとの添字 i から選ぶので、件数を増やしても既存分が活きる
+        rows = [{"task_id": f"task_{i:06d}"} for i in range(a.num_samples)]
+    else:
+        # 1 周目は記事の ID とタイトルだけを持ち、本文は担当分だけ 2 周目で読む
+        # （全記事の本文を持つとメモリが足りなくなる）
+        rows = [{"wiki_id": d["meta"].get("id"), "title": d["meta"].get("title", ""),
+                 "url": d["meta"].get("url")} for d in wiki.iter_wiki(a.wiki_dir)]
+        # 乱数種のみでシャッフルし前方を切る。件数を増やしても既存分が活きる
+        random.Random(a.seed).shuffle(rows)
+        if a.num_samples:
+            rows = rows[: a.num_samples]
     # 添字は分割前のまま保つ（再開時の同一性のため）
     targets = [(i, r) for i, r in enumerate(rows) if i % a.nshard == a.shard]
-    print(f"  記事 {len(rows):,} 件 / "
+    print(f"  {'依頼の種' if a.source == 'tasks' else '記事'} {len(rows):,} 件 / "
           f"シャード {a.shard}/{a.nshard} 担当 {len(targets):,} 件", flush=True)
 
     out_path = Path(a.output_file)
@@ -76,34 +121,40 @@ def main():
             f"{out_path.stem}.s{a.shard:03d}of{a.nshard:03d}{out_path.suffix}")
         print(f"  出力: {out_path.name}", flush=True)
 
-    # 既に書いた記事は飛ばす
+    # 既に書いた記事（tasks では依頼の種）は飛ばす
     done = set()
     if out_path.exists():
         for l in out_path.open(encoding="utf-8"):
             try:
-                done.add(json.loads(l)["wiki_id"])
+                rec = json.loads(l)
+                done.add(rec.get("wiki_id") or rec["task_id"])
             except Exception:
                 pass
         print(f"  既存 {len(done):,} 件をスキップ", flush=True)
 
-    texts = wiki.read_articles(a.wiki_dir, {r["wiki_id"] for _, r in targets} - done, a.article_chars)
+    texts = {} if a.source == "tasks" else \
+        wiki.read_articles(a.wiki_dir, {r["wiki_id"] for _, r in targets} - done, a.article_chars)
 
     def work(idx_row):
         i, r = idx_row
-        if r["wiki_id"] in done:
+        if (r.get("wiki_id") or r["task_id"]) in done:
             return "skip_done", None
         rng = random.Random(a.seed * 1000003 + i)
         user_persona = persona.sample_persona(rng)
-        goal = persona.sample_user_goal(rng)
-        article = texts[r["wiki_id"]]
+        goal = persona.sample_user_goal(rng, goals)
+        if a.source == "tasks":
+            kind, scene = sample_task(rng)
+            role = TASK_SCENARIO_ROLE
+            head = f"依頼の種類: {kind}（{TASK_SEEDS['依頼の種類'][kind]['中身']}）\n場面: {scene}\n"
+        else:
+            role = SCENARIO_ROLE
+            head = f"記事タイトル: {r['title']}\n記事: {texts[r['wiki_id']]}\n"
         # 目的ごとのシナリオの書き方（user_goals.json の scenario_rule）は、その目的が選ばれたときだけ渡す
         rule = persona.USER_GOALS[goal].get("scenario_rule")
         try:
             out = llm.call(client, a.model,
-                           SCENARIO_ROLE.format(moshi=persona.MOSHI_NAME_ROLE,
-                                                goal=persona.USER_GOALS[goal]["goal"]),
-                           f"記事タイトル: {r['title']}\n記事: {article}\n"
-                           f"人物: {persona.render_persona(user_persona)}\nユーザの目的: {goal}\n"
+                           role.format(moshi=persona.MOSHI_NAME_ROLE, goal=persona.USER_GOALS[goal]["goal"]),
+                           head + f"人物: {persona.render_persona(user_persona)}\nユーザの目的: {goal}\n"
                            + (f"この目的でのシナリオの書き方: {rule}\n" if rule else ""),
                            a.effort)
         except Exception as e:  # noqa: BLE001
@@ -111,6 +162,10 @@ def main():
         sc = parse(out)
         if sc is None:
             return f"FAIL 4 項目がそろわない: {out[:60]!r}", None
+        if a.source == "tasks":
+            return "ok", {"wiki_id": None, "task_id": r["task_id"], "title": kind, "url": None,
+                          "index": i, "source": "tasks", "task": {"種類": kind, "場面": scene},
+                          "article_chars": 0, "persona": user_persona, "user_goal": goal, "scenario": sc}
         return "ok", {"wiki_id": r["wiki_id"], "title": r["title"], "url": r["url"],
                       "index": i, "source": "ja_wiki", "article_chars": a.article_chars,
                       "persona": user_persona, "user_goal": goal, "scenario": sc}

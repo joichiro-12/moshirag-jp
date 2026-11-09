@@ -6,7 +6,7 @@
 
 ```
 text_dialogue/     テキストの会話を作る
-  s01  記事 → シナリオ（ユーザのペルソナ・目的・動機）
+  s01  記事 → シナリオ（ユーザのペルソナ・目的・動機）。--source tasks は記事を使わず、依頼の種類と場面から作る
   s02  シナリオ → 会話（ユーザ発話 → 検索の要否 → lead・参照チャンク → 応答 を繰り返す）
   s03  会話 → TTS の台本と、lead・body の位置
 
@@ -70,10 +70,11 @@ Moshi は固定の声。ユーザはシナリオの性別（s03 が `struct.json
 
 | 場所 | 中身 |
 | --- | --- |
-| `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`・`04_backchannel.txt`） |
+| `prompts/` | 各工程のプロンプト（`0_scenario.txt`・`0_scenario_task.txt`・`01_user.txt`・`02_need.txt`・`02-1_lead.txt`・`02-2_ref.txt`・`03_body.txt`・`04_backchannel.txt`）。`0_scenario_task.txt` は記事を使わないシナリオ用 |
 | `constants/moshi_persona.json` | Moshi のペルソナ |
 | `constants/user_persona.json` | ユーザのペルソナの候補と、年齢層の重み |
-| `constants/user_goals.json` | ユーザの目的と終了条件。目的によっては、その目的のときだけ渡す指示（`scenario_rule`・`user_rule`）と、記事の一節を読み上げるか（`passage`） |
+| `constants/user_goals.json` | ユーザの目的と終了条件。目的によっては、その目的のときだけ渡す指示（`scenario_rule`・`user_rule`）と、記事の一節を読み上げるか（`passage`）と、最初の発話の形の候補（`openings`） |
+| `constants/task_seeds.json` | 記事を使わないシナリオ（s01 の `--source tasks`）の種にする、依頼の種類と場面 |
 | `constants/openings.json` | 話し始めのパターンと、Moshi の最初の応じ方 |
 | `constants/followup_forms.json` | 2 発話目以降にときどき指定する発話の形（短い追加の質問）と、その確率 |
 | `constants/fillers.json` | lead で使うフィラー |
