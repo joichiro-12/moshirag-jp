@@ -66,8 +66,9 @@ CLARIFY_RULE: str = load_constant("moshi_reply_rules.json")["聞き返し"]
 FOLLOWUP_FORMS: dict = load_constant("followup_forms.json")
 
 
-def sample_opening(rng: random.Random) -> str:
-    names = list(OPENINGS)
+def sample_opening(rng: random.Random, allowed: list[str] | None = None) -> str:
+    """話し始めの形を重みで選ぶ。allowed（目的の openings）を渡すと、その形の中だけから選ぶ。"""
+    names = [n for n in OPENINGS if allowed is None or n in allowed]
     return rng.choices(names, weights=[OPENINGS[n]["weight"] for n in names])[0]
 
 
@@ -116,6 +117,23 @@ MIN_SEG_CHARS = 6  # 相づちの前後の発話の長さの下限（句読点�
 MOSHI_BACKCHANNELS = {"はい", "ええ", "はいはい", "なるほど", "へえ", "そうですね", "そうですよね",
                       "そうなんですね", "そうなんです"}
 _NOT_COUNTED = re.compile(r"[、。？！…\s]")
+
+# 依頼に答える本題が予告だけ（「作りますね」「では、始めます」で、作ったものの中身を言わない）なら作り直す。
+# 目安：要：考える のターンで、本題が ANNOUNCE_MAX_BODY 字未満、参照チャンクが ANNOUNCE_MIN_REF 字以上（どちらも
+# _NOT_COUNTED を除く）、本題が予告の言い回しで終わる。プロンプトで禁じても、依頼が「お願いできる？」で終わると
+# 「できますよ」だけで止まることがある（試作で 12 会話のうち 3）
+ANNOUNCE_MAX_BODY, ANNOUNCE_MIN_REF, ANNOUNCE_RETRIES = 40, 50, 2
+# 「〜はどうでしょうか」は案を言って尋ねる形にも多いので、「こんな感じでどうでしょうか」だけを拾う
+_ANNOUNCE_CUE = re.compile(r"(ますね|ましょう|ましょうか|ますよ|てみました|ください|いいですか|始めます|いきます|いきますね"
+                           r"|こんな(感じ|ふう)(で|は)?(どう|いかが)でしょうか?)[。！？!?]*$")
+ANNOUNCE_NOTE = ("注意: 予告だけで終えない。参照チャンクにある中身（作ったもの・挙げた案・最初の問い など）を、"
+                 "この発話で話す。「できますよ」「作りますね」だけで終えない\n")
+
+
+def is_announce_only(turn: dict, body: str) -> bool:
+    return (turn.get("need_kind") == "考える" and len(_NOT_COUNTED.sub("", body)) < ANNOUNCE_MAX_BODY
+            and len(_NOT_COUNTED.sub("", turn.get("reference", ""))) >= ANNOUNCE_MIN_REF
+            and bool(_ANNOUNCE_CUE.search(body.strip())))
 
 
 def turn_lines(k: int, t: dict) -> list[dict]:
@@ -287,12 +305,19 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     scenario_txt = render_scenario(sc["scenario"])
     goal = sc["user_goal"]
     goal_def = USER_GOALS[goal]
+    sid = sc.get("wiki_id") or sc["task_id"]   # 乱数の種に使う会話の元の ID（記事か、依頼の種）
     user_sys = USER_ROLE.format(moshi=MOSHI_NAME_ROLE, end_condition=goal_def["end_condition"],
                                 spoken_style=SPOKEN_STYLE)
     # 目的ごとの話し方（user_goals.json の user_rule）は、その目的が選ばれた会話のユーザ役にだけ渡す
     user_head = f"人物: {persona_txt}\nユーザの目的: {goal}\n"
     if goal_def.get("user_rule"):
         user_head += f"この目的での話し方: {goal_def['user_rule']}\n"
+    # 目的に first_lengths があれば、最初の用件の長さを会話ごとに選んで渡す（長さを指定しないと LLM は長めに寄る）
+    first_length = ""
+    if goal_def.get("first_lengths"):
+        fl = goal_def["first_lengths"]
+        first_length = random.Random(f"length-{sid}").choices(list(fl), weights=[fl[n]["weight"] for n in fl])[0]
+        user_head += f"最初の用件の長さ: {fl[first_length]['length']}\n"
     user_head += f"シナリオ:\n{scenario_txt}\n"
     # passage が true の目的（読解）：記事の一節をユーザ役に渡し、読み上げて質問させる（02-2 は会話に出た文章から答えを作る）
     passage = ""
@@ -304,7 +329,8 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
     need_sys = NEED_ROLE.format(knowledge=MOSHI_KNOWLEDGE)
     lead_sys = LEAD_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE, fillers=render_fillers())
     body_sys = BODY_ROLE.format(persona=MOSHI_PERSONA, spoken_style=SPOKEN_STYLE)
-    ref_head = f"記事タイトル: {sc['title']}\n記事: {article}\n"
+    # 記事を使わないシナリオ（s01 の --source tasks）は、02-2 に記事を渡さず、会話・知識・推論から作らせる
+    ref_head = f"記事タイトル: {sc['title']}\n記事: {article}\n" if article else "記事: なし（この会話は記事を使わない）\n"
 
     hist: list[tuple[str, str]] = []   # 会話はユーザから始める
     turns: list[dict] = []
@@ -316,7 +342,7 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         if k == 0:
             form = f"最初の発話の形: {opening}（{OPENINGS[opening]['user']}）\n"
         elif turns[-1].get("body") is not None and not turns[-1].get("clarify"):
-            rng = random.Random(f"form-{sc['wiki_id']}-{k}")   # 記事と往復の番号で決まる（再開しても同じ）
+            rng = random.Random(f"form-{sid}-{k}")   # 記事と往復の番号で決まる（再開しても同じ）
             for name, f_ in FOLLOWUP_FORMS.items():
                 if rng.random() < f_["p"]:
                     form, form_name = f"この発話の形: {name}（{f_['user']}）\n", name
@@ -385,10 +411,17 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
             q += f"モシ（話し始めている前置き）: {lead}\n"
         body = first_line(call(client, model, body_sys, q + "続き:", args.effort_body))
         body = strip_label(body, "続き", "モシ")
+        turn["reference"] = ref   # is_announce_only が見る
+        # 予告だけの本題は、注意を足して ANNOUNCE_RETRIES 回まで作り直す（直らなければ印を残して使う）
+        retries = 0
+        while body and is_announce_only(turn, body) and retries < ANNOUNCE_RETRIES:
+            retries += 1
+            body = strip_label(first_line(call(client, model, body_sys, q + ANNOUNCE_NOTE + "続き:",
+                                               args.effort_body)), "続き", "モシ")
         if not body:
             raise RuntimeError("モシの応答が空")
         turn.update(lead=lead, reference=ref, body=body, ref_has_unknown="不明" in ref,
-                    ref_basis=basis)
+                    ref_basis=basis, body_retries=retries, body_announce_only=is_announce_only(turn, body))
 
         # ---- 04 相づち：相づち込みの会話履歴・この往復の発話 ----------------------------------
         # 失敗しても会話は作り直さず、この往復は相づち無しにする
@@ -431,10 +464,13 @@ def generate(sc: dict, article: str, opening: str, client, model, args) -> dict:
         "title": sc["title"],
         "url": sc.get("url"),
         "source": sc.get("source", ""),
+        "task_id": sc.get("task_id"),         # 記事を使わないシナリオの ID（記事のときは None）
+        "task": sc.get("task"),               # 記事を使わないシナリオの、依頼の種類と場面
         "topic": sc["title"],                 # s03 が struct.json に写す
         "persona": sc["persona"],
         "user_goal": goal,
         "opening": opening,
+        "first_length": first_length,         # 最初の用件の長さの指定（first_lengths のある目的だけ）
         "scenario": sc["scenario"],
         "passage": passage,                   # 読解で読み上げた記事の一節（それ以外は空）
         "article_chars": len(article),
@@ -474,22 +510,33 @@ def main(args) -> None:
     targets = [(i, sc) for i, sc in enumerate(rows) if i % args.nshard == args.shard]
     print(f"  シャード {args.shard}/{args.nshard}: 担当 {len(targets)} 件 / 全 {len(rows)} 件",
           flush=True)
-    articles = read_articles(args.wiki_dir, {sc["wiki_id"] for _, sc in targets},
-                             max([sc.get("article_chars", args.article_chars) for _, sc in targets],
-                                 default=args.article_chars))
-    print(f"  記事 {len(articles)} 件を読んだ", flush=True)
+    # 記事を読むのは記事のシナリオだけ（s01 の --source tasks のシナリオは wiki_id が None）
+    wiki_targets = [sc for _, sc in targets if sc.get("wiki_id")]
+    articles = {}
+    if wiki_targets:
+        if not args.wiki_dir:
+            raise SystemExit("記事のシナリオがあるので --wiki_dir が要る")
+        articles = read_articles(args.wiki_dir, {sc["wiki_id"] for sc in wiki_targets},
+                                 max([sc.get("article_chars", args.article_chars) for sc in wiki_targets],
+                                     default=args.article_chars))
+    print(f"  記事 {len(articles)} 件を読んだ（記事を使わないシナリオ {len(targets) - len(wiki_targets)} 件）",
+          flush=True)
 
     def work(i: int, sc: dict):
         stem = f"{Path(args.input_file).stem}_{i:06d}"
         pj, pt = out / f"{stem}.json", out / f"{stem}.txt"
         if args.resume and (pj.exists() or (rej / f"{stem}.json").exists()):
             return stem, "skip"
-        if sc["wiki_id"] not in articles:
-            return stem, "FAIL 記事が見つからない"
-        # 記事は s01 がシナリオを作ったときと同じ長さに切る
-        article = articles[sc["wiki_id"]][: sc.get("article_chars", args.article_chars)]
-        # 話し始めのパターンは i から決める（再開しても同じになる）
-        opening = sample_opening(random.Random(args.seed * 1000 + i))
+        if sc.get("wiki_id"):
+            if sc["wiki_id"] not in articles:
+                return stem, "FAIL 記事が見つからない"
+            # 記事は s01 がシナリオを作ったときと同じ長さに切る
+            article = articles[sc["wiki_id"]][: sc.get("article_chars", args.article_chars)]
+        else:
+            article = ""
+        # 話し始めのパターンは i から決める（再開しても同じになる）。目的に openings があれば、その中から選ぶ
+        opening = sample_opening(random.Random(args.seed * 1000 + i),
+                                 USER_GOALS[sc["user_goal"]].get("openings"))
         for attempt in range(3):
             try:
                 conv = generate(sc, article, opening, client, args.model, args)
@@ -518,7 +565,8 @@ def main(args) -> None:
 def build_parser():
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--input_file", required=True, help="s01 の出力（シナリオの jsonl）")
-    p.add_argument("--wiki_dir", required=True, help="ja_wiki の *.jsonl.gz を置いたディレクトリ（02-2 用）")
+    p.add_argument("--wiki_dir", default=None,
+                   help="ja_wiki の *.jsonl.gz を置いたディレクトリ（02-2 用）。記事のシナリオがあるときは要る")
     p.add_argument("--article_chars", type=int, default=6000,
                    help="シナリオに article_chars が無いときに使う記事の長さ")
     p.add_argument("--shard", type=int, default=0,

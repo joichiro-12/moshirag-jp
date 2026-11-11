@@ -50,7 +50,9 @@ JOBS_DEFAULT: list = _USER["職業"]["その他の年齢層"]
 KNOWLEDGE: list = _USER["前提知識"]
 
 # ユーザの目的（user goal）：会話全体の目的 goal（0 に見せる）と終了条件 end_condition（01 に見せる）と出現の重み weight。
-# 目的によっては、目的ごとの指示 scenario_rule（0）・user_rule（01）と、記事の一節を読み上げるか passage（01）を持つ。
+# 目的によっては、目的ごとの指示 scenario_rule（0）・user_rule（01）と、記事の一節を読み上げるか passage（01）と、
+# 最初の発話の形の候補 openings（01。openings.json の名前。無ければすべての形から選ぶ）と、
+# 最初の用件の長さの候補 first_lengths（01。会話ごとに重みで 1 つ選んで渡す）を持つ。
 # 指示と一節は、その目的が選ばれた会話にだけ渡す（共通のプロンプトには目的ごとのことを書かない）
 USER_GOALS: dict = load_constant("user_goals.json")
 
@@ -61,8 +63,9 @@ def sample_persona(rng: random.Random) -> dict:
             "職業": rng.choice(JOBS.get(age, JOBS_DEFAULT)), "前提知識": rng.choice(KNOWLEDGE)}
 
 
-def sample_user_goal(rng: random.Random) -> str:
-    names = list(USER_GOALS)
+def sample_user_goal(rng: random.Random, allowed: list[str] | None = None) -> str:
+    """目的を重みで選ぶ。allowed を渡すと、その目的の中だけから選ぶ（重みはそのまま）。"""
+    names = [n for n in USER_GOALS if allowed is None or n in allowed]
     return rng.choices(names, weights=[USER_GOALS[n]["weight"] for n in names])[0]
 
 
