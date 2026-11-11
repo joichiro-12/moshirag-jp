@@ -4,15 +4,16 @@
 出力の各行: {"wiki_id": ..., "title": ..., "url": ..., "index": ..., "source": "ja_wiki",
             "article_chars": ..., "persona": {...}, "user_goal": "...", "scenario": {...}}
 
---source tasks では記事を使わず、constants/task_seeds.json の依頼の種類と場面からシナリオを作る。
+--source tasks では記事を使わず、constants/task_seeds.json の依頼の種類・お題・場面・名字からシナリオを作る。
 出力の各行: {"wiki_id": null, "task_id": "task_000000", "title": 依頼の種類, "url": null, "index": ...,
-            "source": "tasks", "task": {"種類": ..., "場面": ...}, "article_chars": 0, "persona": {...},
-            "user_goal": "...", "scenario": {...}}
-目的は --goals で絞る（既定は 長い依頼・作業依頼）。読み上げる一節が要る目的（読解）は使えない。
+            "source": "tasks", "task": {"種類": ..., "お題": ..., "場面": ..., "名字": ...}, "article_chars": 0,
+            "persona": {...}, "user_goal": "...", "scenario": {...}}
+目的は --goals で絞る（既定は 長い依頼）。読み上げる一節が要る目的（読解）は使えない。scenario_rule が記事を前提に
+書かれた目的（作業依頼・今の情報・探す など）は、記事なしでは指示が食い違うので使わない。
 
     $VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py --source tasks \
         --output_file data/moshirag_jp/task_scenario.jsonl --num_samples 10000 \
-        --goals 長い依頼,作業依頼 --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
+        --goals 長い依頼 --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1"
 
 Usage:
     $VENV/bin/python moshirag_data/text_dialogue/s01_scenario.py \
@@ -30,17 +31,19 @@ from libs import llm, persona, wiki
 SCENARIO_KEYS = ["状況", "最初の関心", "派生しうる関心", "なぜ関心があるのか"]
 
 SCENARIO_ROLE = persona.load_prompt("0_scenario.txt")
-# 記事を使わないシナリオ（--source tasks）：依頼の種類と場面を種にする
+# 記事を使わないシナリオ（--source tasks）：依頼の種類・お題・場面・名字を種にする
 TASK_SCENARIO_ROLE = persona.load_prompt("0_scenario_task.txt")
 TASK_SEEDS: dict = persona.load_constant("task_seeds.json")
-TASK_DEFAULT_GOALS = ["長い依頼", "作業依頼"]
+TASK_DEFAULT_GOALS = ["長い依頼"]
 
 
-def sample_task(rng: random.Random) -> tuple[str, str]:
-    """依頼の種類（重みで）と場面（同じ確率で）を選ぶ。"""
+def sample_task(rng: random.Random) -> dict:
+    """依頼の種類（重みで）、場面・お題・名字（同じ確率で）を選ぶ。
+    お題と名字は後から足したので、種類と場面の選び方（乱数を引く順）は変えずに、その後で引く。"""
     kinds = TASK_SEEDS["依頼の種類"]
     kind = rng.choices(list(kinds), weights=[kinds[k]["weight"] for k in kinds])[0]
-    return kind, rng.choice(TASK_SEEDS["場面"])
+    scene = rng.choice(TASK_SEEDS["場面"])
+    return {"種類": kind, "お題": rng.choice(kinds[kind]["お題"]), "場面": scene, "名字": rng.choice(TASK_SEEDS["名字"])}
 
 
 def parse(out: str) -> dict | None:
@@ -143,9 +146,10 @@ def main():
         user_persona = persona.sample_persona(rng)
         goal = persona.sample_user_goal(rng, goals)
         if a.source == "tasks":
-            kind, scene = sample_task(rng)
+            task = sample_task(rng)
             role = TASK_SCENARIO_ROLE
-            head = f"依頼の種類: {kind}（{TASK_SEEDS['依頼の種類'][kind]['中身']}）\n場面: {scene}\n"
+            head = (f"依頼の種類: {task['種類']}（{TASK_SEEDS['依頼の種類'][task['種類']]['中身']}）\n"
+                    f"お題: {task['お題']}\n場面: {task['場面']}\n人名を出すときの名字: {task['名字']}\n")
         else:
             role = SCENARIO_ROLE
             head = f"記事タイトル: {r['title']}\n記事: {texts[r['wiki_id']]}\n"
@@ -163,8 +167,8 @@ def main():
         if sc is None:
             return f"FAIL 4 項目がそろわない: {out[:60]!r}", None
         if a.source == "tasks":
-            return "ok", {"wiki_id": None, "task_id": r["task_id"], "title": kind, "url": None,
-                          "index": i, "source": "tasks", "task": {"種類": kind, "場面": scene},
+            return "ok", {"wiki_id": None, "task_id": r["task_id"], "title": task["種類"], "url": None,
+                          "index": i, "source": "tasks", "task": task,
                           "article_chars": 0, "persona": user_persona, "user_goal": goal, "scenario": sc}
         return "ok", {"wiki_id": r["wiki_id"], "title": r["title"], "url": r["url"],
                       "index": i, "source": "ja_wiki", "article_chars": a.article_chars,
