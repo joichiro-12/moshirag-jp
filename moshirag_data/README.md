@@ -8,6 +8,7 @@
 text_dialogue/     テキストの会話を作る
   s01  記事 → シナリオ（ユーザのペルソナ・目的・動機）
   s02  シナリオ → 会話（ユーザ発話 → 検索の要否 → lead・参照チャンク → 応答 を繰り返す）
+  s02s 質問 → 1 ターンの会話（QA データセットの質問 1 つ → lead・参照チャンク → 応答）
   s03  会話 → TTS の台本と、lead・body の位置
 
 speech_dialogue/   音声にする
@@ -26,6 +27,24 @@ dev/               開発用
   check_dialogue.py  s02 の会話を LLM で検査し、不合格を rejected/ に移す（事後検査）
   walkthrough.ipynb  1 件ずつ中身を見ながら通す
 ```
+
+## 1 ターンの会話（s02s）
+
+MoshiRAG 論文（arXiv:2604.12928）の single-turn subset に合わせた工程。論文は、QA データセットの質問をそのまま
+ユーザの発話にし、参照とモシの応答を LLM で作って、複数ターンの会話と一緒に学習データに入れた（§4.1.2・付録 A）。
+複数ターンの会話は挨拶や前置きから始まることがあるが、この工程の会話は挨拶なしで質問から始まる。
+
+```
+python moshirag_data/text_dialogue/s02s_single_turn.py --input_file <質問の jsonl> --output_dir <出力先> \
+    --model "$NAME" --llm_base_url "http://localhost:${PORT}/v1" --num_samples 1000 --resume
+```
+
+- 入力は 1 行 1 問の jsonl：`{"id": ..., "question": ..., "answers": [...], "source": ..., "wiki_id": ..., "title": ...}`。`question` のほかは任意
+- 02-1（lead）・02-2（参照チャンク）・03（body）・04（相づち）は s02 と同じプロンプトを使う。話し始めのパターンは `質問` に固定
+- `--need always`（既定）はすべての質問で検索する（論文の single-turn subset は、どの会話にも参照がある）。`--need judge` は s02 と同じ 02 の判定に従う
+- `--answer_hint` は、`answers` をデータセットの正解として 02-2 に渡す。`--wiki_dir` があれば、`wiki_id` の記事も 02-2 に渡す
+- 出力は s02 と同じ形（`<stem>.json` と `<stem>.txt`）なので、s03 以降はそのまま使える。ユーザの声の性別は、質問ごとに乱択したペルソナから取る
+- 評価に使うデータセットの質問は入れない（学習とテストで同じ質問が重ならないようにする）
 
 ## 用語
 
